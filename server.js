@@ -1,8 +1,8 @@
 /* ───────────────────────────────────────────────────────────────────────
    TuCan server.js  —  WhatsApp voice↔text translator bot
-   • 5-language wizard (@welcome + reset)      • Whisper + GPT-4o translate
-   • Google-TTS voices (en-US preference)      • Stripe pay-wall (5 free)
-   • Supabase logging + self-healing bucket    • 3-part voice-note reply
+   • 5-language onboarding wizard (@welcome + reset) • Whisper + GPT-4o
+   • Google-TTS voices (prefers en-US)               • Stripe pay-wall (5 free)
+   • Supabase logging + self-healing bucket          • 3-part voice-note reply
 ────────────────────────────────────────────────────────────────────────*/
 import express    from "express";
 import bodyParser from "body-parser";
@@ -75,7 +75,7 @@ app.post(
                  : s.metadata.tier === "annual"  ? "ANNUAL"
                  : "LIFETIME";
 
-      /* try by stripe_cust_id  →  fallback by uid */
+      /* try by stripe_cust_id → fallback by uid */
       const upd1 = await supabase
         .from("users")
         .update({ plan, free_used: 0, stripe_sub_id: s.subscription })
@@ -106,7 +106,7 @@ app.post(
 );
 
 /* ====================================================================
-   2️⃣  CONSTANTS / HELPERS
+   2️⃣  CONSTANTS / TEXT  (menus, i18n)
 ==================================================================== */
 const MENU = {
   1:{ name:"English",    code:"en" },
@@ -116,12 +116,13 @@ const MENU = {
   5:{ name:"German",     code:"de" }
 };
 const DIGITS = Object.keys(MENU);
+const menuList = () =>
+  DIGITS.map(d=>`${d}️⃣ ${MENU[d].name} (${MENU[d].code})`).join("\n");
 
-const MENU_PROMPT = `👋 Welcome to TuCanChat!  Please choose your language:\n\n${DIGITS.map(
-  d=>`${d}️⃣ ${MENU[d].name} (${MENU[d].code})`).join("\n")}`;
+const MENU_PROMPT = `👋 Welcome to TuCanChat!  Please choose your language:\n\n${menuList()}`;
 
 const HOW_WORKS = {
-  en: `📌 How TuCanChat works
+  en:`📌 How TuCanChat works
 • Send any voice note or text.
 • I instantly deliver:
  1. Heard: your exact words
@@ -130,8 +131,7 @@ const HOW_WORKS = {
 • Type “reset” anytime to switch languages.
 
 When it shines: quick travel chats, decoding a doctor or lawyer, serving global customers, or brushing up on a new language—without ever leaving WhatsApp.`,
-
-  es: `📌 Cómo funciona TuCanChat
+  es:`📌 Cómo funciona TuCanChat
 • Envía una nota de voz o texto.
 • Yo entrego al instante:
  1. Escuchado: tus palabras exactas
@@ -139,9 +139,8 @@ When it shines: quick travel chats, decoding a doctor or lawyer, serving global 
  3. Audio en tu idioma
 • Escribe “reset” en cualquier momento para cambiar de idioma.
 
-Ideal para: viajes, aclarar mensajes médicos o legales, atender clientes globales o practicar un idioma sin salir de WhatsApp.`,
-
-  fr: `📌 Comment fonctionne TuCanChat
+Ideal para: viajes, entender mensajes médicos o legales, atender clientes globales o practicar un idioma sin salir de WhatsApp.`,
+  fr:`📌 Comment fonctionne TuCanChat
 • Envoie un message vocal ou texte.
 • Je réponds instantanément :
  1. Entendu : tes mots exacts
@@ -149,9 +148,8 @@ Ideal para: viajes, aclarar mensajes médicos o legales, atender clientes global
  3. Audio dans ta langue
 • Tape “reset” à tout moment pour changer de langue.
 
-Parfait pour : voyages, compréhension de médecins/avocats, service client mondial ou apprentissage d’une langue sans quitter WhatsApp.`,
-
-  pt: `📌 Como o TuCanChat funciona
+Parfait pour voyager, comprendre médecins/avocats, servir des clients mondiaux ou apprendre une langue sans quitter WhatsApp.`,
+  pt:`📌 Como o TuCanChat funciona
 • Envie qualquer áudio ou texto.
 • Eu entrego instantaneamente:
  1. Ouvido: suas palavras
@@ -159,9 +157,8 @@ Parfait pour : voyages, compréhension de médecins/avocats, service client mond
  3. Áudio no seu idioma
 • Digite “reset” a qualquer momento para trocar de idioma.
 
-Ótimo para: viagens, entender médicos ou advogados, atender clientes globais ou praticar um novo idioma sem sair do WhatsApp.`,
-
-  de: `📌 So funktioniert TuCanChat
+Ótimo para viagens, entender médicos ou advogados, atender clientes globais ou praticar um novo idioma sem sair do WhatsApp.`,
+  de:`📌 So funktioniert TuCanChat
 • Sende eine Sprachnachricht oder Text.
 • Ich liefere sofort:
  1. Gehört: deine Worte
@@ -172,48 +169,39 @@ Parfait pour : voyages, compréhension de médecins/avocats, service client mond
 Perfekt für Reisen, Arzt- oder Anwaltstexte, weltweiten Kundensupport oder Sprachtraining – alles in WhatsApp.`
 };
 
-const paywallMsg = {
+const UI = {
+  en:{ pickReceive:`🌎 What language do you RECEIVE messages in?`,
+       voice:`🔊 Voice gender?\n1️⃣ Male\n2️⃣ Female`,
+       setupDone:`✅ Setup complete!  Send a voice-note or text.`,
+       targetDiff:`⚠️ Target must differ.`, badReply:`❌ Reply 1-5.`},
+  es:{ pickReceive:`🌎 ¿En qué idioma RECIBES mensajes?`,
+       voice:`🔊 ¿Género de voz?\n1️⃣ Masculino\n2️⃣ Femenino`,
+       setupDone:`✅ Configuración lista.  Envía audio o texto.`,
+       targetDiff:`⚠️ El idioma destino debe ser distinto.`, badReply:`❌ Responde 1-5.`},
+  fr:{ pickReceive:`🌎 Dans quelle langue RECEVEZ-vous les messages ?`,
+       voice:`🔊 Genre de voix ?\n1️⃣ Homme\n2️⃣ Femme`,
+       setupDone:`✅ Configuration terminée ! Envoie un vocal ou un texte.`,
+       targetDiff:`⚠️ La langue cible doit être différente.`, badReply:`❌ Réponds 1-5.`},
+  pt:{ pickReceive:`🌎 Em que idioma você RECEBE mensagens?`,
+       voice:`🔊 Gênero de voz?\n1️⃣ Masculino\n2️⃣ Feminino`,
+       setupDone:`✅ Configuração pronta! Envie áudio ou texto.`,
+       targetDiff:`⚠️ Idioma de destino deve ser diferente.`, badReply:`❌ Responda 1-5.`},
+  de:{ pickReceive:`🌎 In welcher Sprache ERHÄLTST du Nachrichten?`,
+       voice:`🔊 Stimmgeschlecht?\n1️⃣ Männlich\n2️⃣ Weiblich`,
+       setupDone:`✅ Einrichtung abgeschlossen!  Sende eine Sprachnachricht oder Text.`,
+       targetDiff:`⚠️ Zielsprache muss abweichen.`, badReply:`❌ Antworte 1-5.`}
+};
+
+const PAYWALL = {
   en:`⚠️ You’ve used your 5 free translations.\n\nChoose a plan:\n1️⃣ Monthly  $4.99\n2️⃣ Annual   $49.99\n3️⃣ Lifetime $199`,
   es:`⚠️ Has usado tus 5 traducciones gratis.\n\nElige un plan:\n1️⃣ Mensual  $4.99\n2️⃣ Anual    $49.99\n3️⃣ De por vida $199`,
-  fr:`⚠️ Vous avez utilisé vos 5 traductions gratuites.\n\nChoisissez une offre :\n1️⃣ Mensuel  4,99 $\n2️⃣ Annuel   49,99 $\n3️⃣ À vie    199 $`,
+  fr:`⚠️ Vous avez utilisé vos 5 traductions gratuites.\n\nChoisissez :\n1️⃣ Mensuel  4,99 $\n2️⃣ Annuel   49,99 $\n3️⃣ À vie    199 $`,
   pt:`⚠️ Você usou suas 5 traduções grátis.\n\nEscolha um plano:\n1️⃣ Mensal   $4.99\n2️⃣ Anual    $49.99\n3️⃣ Vitalício $199`,
   de:`⚠️ Du hast deine 5 kostenlosen Übersetzungen verbraucht.\n\nWähle einen Plan:\n1️⃣ Monatlich  $4,99\n2️⃣ Jährlich   $49,99\n3️⃣ Lebenslang $199`
 };
 
-const LANG_UI = {
-  en:{ receive:`🌎 What language do you RECEIVE messages in?`,
-       voice:`🔊 Voice gender?\n1️⃣ Male\n2️⃣ Female`,
-       setupDone:`✅ Setup complete!  Send a voice-note or text.`,
-       targetDiff:`⚠️ Target must differ.`, badReply:`❌ Reply 1-5.` },
-  es:{ receive:`🌎 ¿En qué idioma RECIBES mensajes?`,
-       voice:`🔊 ¿Género de voz?\n1️⃣ Masculino\n2️⃣ Femenino`,
-       setupDone:`✅ Configuración lista. Envía un audio o texto.`,
-       targetDiff:`⚠️ El idioma destino debe ser distinto.`, badReply:`❌ Responde 1-5.` },
-  fr:{ receive:`🌎 Dans quelle langue RECEVEZ-vous les messages ?`,
-       voice:`🔊 Genre de voix ?\n1️⃣ Homme\n2️⃣ Femme`,
-       setupDone:`✅ Configuration terminée ! Envoie une note vocale ou un texte.`,
-       targetDiff:`⚠️ La langue cible doit être différente.`, badReply:`❌ Réponds 1-5.` },
-  pt:{ receive:`🌎 Em que idioma você RECEBE mensagens?`,
-       voice:`🔊 Gênero de voz?\n1️⃣ Masculino\n2️⃣ Feminino`,
-       setupDone:`✅ Configuração pronta! Envie áudio ou texto.`,
-       targetDiff:`⚠️ Idioma de destino deve ser diferente.`, badReply:`❌ Responda 1-5.` },
-  de:{ receive:`🌎 In welcher Sprache ERHÄLTST du Nachrichten?`,
-       voice:`🔊 Stimmgeschlecht?\n1️⃣ Männlich\n2️⃣ Weiblich`,
-       setupDone:`✅ Einrichtung abgeschlossen!  Sende eine Sprachnachricht oder Text.`,
-       targetDiff:`⚠️ Zielsprache muss abweichen.`, badReply:`❌ Antworte 1-5.` }
-};
-
-/* — generic helpers — */
-const toWav = (i,o)=>new Promise((res,rej)=>
-  ffmpeg(i).audioCodec("pcm_s16le")
-    .outputOptions(["-ac","1","-ar","16000","-f","wav"])
-    .on("error",rej).on("end",()=>res(o))
-    .save(o)
-);
-
-
 /* ====================================================================
-   3️⃣  AUDIO & AI HELPERS  (unchanged from working build)
+   3️⃣  AUDIO & AI HELPERS
 ==================================================================== */
 const toWav = (i,o)=>new Promise((res,rej)=>
   ffmpeg(i).audioCodec("pcm_s16le")
@@ -255,7 +243,6 @@ async function translate(text,target){
   return r.choices[0].message.content.trim();
 }
 
-/* Google-TTS voice picker  (same as working build) */
 let voiceCache=null;
 async function loadVoices(){
   if(voiceCache)return;
@@ -374,150 +361,94 @@ async function handleIncoming(from,text,num,mediaUrl){
 
   if(!user){
     ({ data:user } = await supabase.from("users").upsert(
-      { phone_number:from, language_step:"welcome", plan:"FREE", free_used:0 },
+      { phone_number:from, language_step:"choose_ui", plan:"FREE", free_used:0 },
       { onConflict:["phone_number"] }
     ).select("*").single());
   }
-  const ui = LANG_UI[user.source_lang||"en"];
+
+  const uiLang = user.ui_lang || "en";
+  const ui = UI[uiLang];
   const isFree = !user.plan || user.plan==="FREE";
 
-  /* FIRST contact or reset */
-  if(user.language_step==="welcome"){
-    await sendMessage(from, MENU_PROMPT);
-    await supabase.from("users")
-      .update({ language_step:"source" })
-      .eq("id", user.id);
-    return;
-  }
-
-  /* helper to fetch right strings */
-  const L = (key) => i18n[user.ui_lang || "en"][key];
-
-  /* ————————————————— 0. first-ever message → welcome menu ——————— */
-  if (user.language_step === "choose_ui") {
-    const choice = pickLang(text);
-    if (choice) {
-      await supabase
-        .from("users")
-        .update({
-          ui_lang: choice.code,
-          source_lang: choice.code,       // user’s own language
-          language_step: "target",
-        })
-        .eq("id", user.id);
-
-      await sendMessage(
-        from,
-        [
-          i18n[choice.code].howItWorks,
-          "",
-          i18n[choice.code].pickReceive,
-          "",
-          menuList(choice.code),
-        ].join("\n")
-      );
-    } else {
-      await sendMessage(from, `${i18n.en.welcome}\n\n${menuList("en")}`);
-    }
-    return;
-  }
-
-  const isFree = !user.plan || user.plan === "FREE";
-
-  /* pay-wall button replies */
-  if (/^[1-3]$/.test(text) && isFree && user.free_used >= 5) {
-    const tier = text === "1" ? "monthly" : text === "2" ? "annual" : "life";
-    try {
-      const link = await checkoutUrl(user, tier);
-      await sendMessage(from, `Tap to pay → ${link}`);
-    } catch (e) {
-      console.error("Stripe checkout err:", e.message);
-      await sendMessage(from, "⚠️ Payment link error.  Try again later.");
-    }
-    return;
-  }
-
-  /* reset command (case-insensitive, English word) */
-  if (/^reset$/i.test(text)) {
-    await supabase
-      .from("users")
-      .update({
-        language_step: "choose_ui",
-        ui_lang: null,
-        source_lang: null,
-        target_lang: null,
-        voice_gender: null,
-      })
-      .eq("id", user.id);
-
-    await sendMessage(from, `${i18n.en.welcome}\n\n${menuList("en")}`);
-    return;
-  }
-
-  /* pay-wall gate */
-  if (isFree && user.free_used >= 5) {
-    await sendMessage(from, paywallMsg[user.ui_lang || "en"]);
-    return;
-  }
-
-   /* wizard STEP 1: pick self-language */
-  if(user.language_step==="source"){
-    const choice = pickLang(text);
-    if(!choice){ await sendMessage(from,MENU_PROMPT+"\n"+ui.badReply); return; }
-
-    await supabase.from("users").update({
-      source_lang: choice.code,
-      language_step:"how"
-    }).eq("id",user.id);
-
-    await sendMessage(from, HOW_WORKS[choice.code]);                     // how-it-works in chosen
-    await sendMessage(from, LANG_UI[choice.code].receive);               // ask receive-lang
-    return;
-  }
-
-  /* STEP 2: receive language */
-  if(user.language_step==="how"){
-    const choice = pickLang(text);
-    if(!choice){ await sendMessage(from,LANG_UI[user.source_lang].badReply); return; }
-
-    if(choice.code===user.source_lang){
-      await sendMessage(from,LANG_UI[user.source_lang].targetDiff+"\n"+
-                            MENU_PROMPT.replace("👋 Welcome to TuCanChat!  ",""));
+  /* STEP 0 ▸ prompt menu once */
+  if(user.language_step==="choose_ui"){
+    const pick = pickLang(text);
+    if(!pick){
+      await sendMessage(from,MENU_PROMPT);
       return;
     }
-
     await supabase.from("users").update({
-      target_lang: choice.code,
-      language_step:"gender"
+      ui_lang:pick.code,
+      source_lang:pick.code,
+      language_step:"target"
     }).eq("id",user.id);
 
-    await sendMessage(from, LANG_UI[user.source_lang].voice);
+    await sendMessage(from,HOW_WORKS[pick.code]);
+    await sendMessage(from,UI[pick.code].pickReceive+"\n\n"+menuList());
     return;
   }
 
-  /* STEP 3: gender */
+  /* pay-wall button replies */
+  if(/^[1-3]$/.test(text)&&isFree&&user.free_used>=5){
+    const tier=text==="1"?"monthly":text==="2"?"annual":"life";
+    try{
+      const link=await checkoutUrl(user,tier);
+      await sendMessage(from,`Tap to pay → ${link}`);
+    }catch(e){
+      console.error("Stripe checkout err:",e.message);
+      await sendMessage(from,"⚠️ Payment link error.  Try again later.");
+    }
+    return;
+  }
+
+  /* English RESET command */
+  if(/^reset$/i.test(text)){
+    await supabase.from("users").update({
+      language_step:"choose_ui",
+      ui_lang:null, source_lang:null, target_lang:null, voice_gender:null
+    }).eq("id",user.id);
+    await sendMessage(from,MENU_PROMPT);
+    return;
+  }
+
+  /* paywall gate */
+  if(isFree&&user.free_used>=5){ await sendMessage(from,PAYWALL[uiLang]); return; }
+
+  /* STEP 1: target language */
+  if(user.language_step==="target"){
+    const pick=pickLang(text);
+    if(!pick){ await sendMessage(from,ui.badReply+"\n\n"+menuList()); return; }
+    if(pick.code===user.source_lang){
+      await sendMessage(from,ui.targetDiff+"\n\n"+menuList()); return;
+    }
+    await supabase.from("users").update({
+      target_lang:pick.code,
+      language_step:"gender"
+    }).eq("id",user.id);
+    await sendMessage(from,ui.voice);
+    return;
+  }
+
+  /* STEP 2: gender */
   if(user.language_step==="gender"){
     let g=null;
     if(/^1$/.test(text)||/male/i.test(text))   g="MALE";
     if(/^2$/.test(text)||/female/i.test(text)) g="FEMALE";
-    if(!g){ await sendMessage(from,LANG_UI[user.source_lang].voice); return; }
-
+    if(!g){ await sendMessage(from,ui.voice); return; }
     await supabase.from("users").update({
       voice_gender:g, language_step:"ready"
     }).eq("id",user.id);
-
-    await sendMessage(from, LANG_UI[user.source_lang].setupDone);
+    await sendMessage(from,ui.setupDone);
     return;
   }
 
-  /* guard: setup incomplete */
-  if (!user.source_lang || !user.target_lang || !user.voice_gender) {
-    await sendMessage(from, "⚠️ Setup incomplete.  Type reset to start over.");
-    return;
+  /* guard */
+  if(!user.source_lang||!user.target_lang||!user.voice_gender){
+    await sendMessage(from,"⚠️ Setup incomplete.  Type reset to start over.");return;
   }
 
   /* =================================================================
-     Translation / TTS  (unchanged)
+     Translation / TTS  (same as working build)
   ================================================================= */
   let original="",detected="";
   if(num>0&&mediaUrl){
@@ -559,12 +490,12 @@ async function handleIncoming(from,text,num,mediaUrl){
   /* reply */
   if(num===0){ await sendMessage(from,translated); return; }
 
-  await sendMessage(from,`🗣 ${original}`);          // 1
-  await sendMessage(from,translated);               // 2
+  await sendMessage(from,`🗣 ${original}`);     // 1
+  await sendMessage(from,translated);          // 2
   try{
     const mp3=await tts(translated,dest,user.voice_gender);
     const pub=await uploadAudio(mp3);
-    await sendMessage(from,"",pub);                 // 3 (audio)
+    await sendMessage(from,"",pub);            // 3 (audio only)
   }catch(e){ console.error("TTS/upload error:",e.message); }
 }
 
