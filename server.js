@@ -370,29 +370,38 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
   }
 
   /* 4. onboarding wizard ----------------------------------- */
+/* 4a. pick TARGET language (the language TuCanChat will reply in) */
+if (user.language_step === "target") {
+  const choice = pickLang(text);
+  if (choice) {
+    /* save target and advance */
+    await supabase
+      .from("users")
+      .update({ target_lang: choice.code, language_step: "source" })
+      .eq("phone_number", from);
 
-  /* 4a. pick TARGET language (bot’s reply language) */
-  if (user.language_step === "target") {
-    const choice = pickLang(text);
-    if (choice) {
-      await supabase.from("users")
-        .update({ target_lang: choice.code, language_step: "source" })
-        .eq("phone_number", from);
+    /* 1️⃣  “How TuCanChat works” — translated */
+    const how = await translate(HOW_TEXT, choice.code);
+    await sendMessage(from, how);
 
-      /* two separate messages */
-      const how    = await translate(HOW_TEXT, choice.code);
-      await sendMessage(from, how);                                // 1️⃣ first message
-
-      const askSrc = await translate(
-        "What language do you RECEIVE messages in? Reply 1-5.",
-        choice.code
-      );
-      await sendMessage(from, menuMsg(askSrc));                    // 2️⃣ second message
-    } else {
-      await sendMessage(from, menuMsg("❌ Reply 1-5.\nLanguages:"));
-    }
-    return;
+    /* 2️⃣  build the heading + menu, then translate the whole block */
+    const menuEn = `Choose the language you RECEIVE messages in:
+1) English (en)
+2) Spanish (es)
+3) French (fr)
+4) Portuguese (pt)
+5) German (de)`;
+    const menuTranslated = await translate(menuEn, choice.code);
+    await sendMessage(from, menuTranslated);
+  } else {
+    await sendMessage(
+      from,
+      "❌ Reply 1-5.\n1) English\n2) Spanish\n3) French\n4) Portuguese\n5) German"
+    );
   }
+  return;
+}
+
 
   /* 4b. pick SOURCE language (user’s sending language) */
   if (user.language_step === "source") {
