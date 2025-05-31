@@ -354,10 +354,9 @@ const logRow=d=>supabase.from("translations").insert({ ...d,id:uuid() });
 async function handleIncoming(from,text,num,mediaUrl){
   if(!from) return;
 
-  /* fetch/create user */
-  let { data:user } = await supabase
-    .from("users").select("*")
-    .eq("phone_number",from).single();
+  /* fetch / create user row */
+  let { data:user } = await supabase.from("users")
+    .select("*").eq("phone_number",from).single();
 
   if(!user){
     ({ data:user } = await supabase.from("users").upsert(
@@ -366,86 +365,103 @@ async function handleIncoming(from,text,num,mediaUrl){
     ).select("*").single());
   }
 
-  const uiLang = user.ui_lang || "en";
-  const ui = UI[uiLang];
   const isFree = !user.plan || user.plan==="FREE";
 
-  /* STEP 0 ▸ prompt menu once */
+  /* 0. first run – choose UI language */
   if(user.language_step==="choose_ui"){
-    const pick = pickLang(text);
-    if(!pick){
-      await sendMessage(from,MENU_PROMPT);
+    const lang = pickLang(text);
+    if(!lang){
+      await sendMessage(from, WELCOME);
       return;
     }
     await supabase.from("users").update({
-      ui_lang:pick.code,
-      source_lang:pick.code,
-      language_step:"target"
-    }).eq("id",user.id);
+      ui_lang   : lang.code,
+      source_lang: lang.code,            // user language
+      language_step:"receive"
+    }).eq("id", user.id);
 
-    await sendMessage(from,HOW_WORKS[pick.code]);
-    await sendMessage(from,UI[pick.code].pickReceive+"\n\n"+menuList());
+    /* send how-it-works + ask receive-language (localised) */
+    await sendMessage(from, t("how", lang.code));
+    await sendMessage(from,
+      `${t("askReceive",lang.code)}\n\n${buildMenu(lang.code)}`
+    );
     return;
   }
 
-  /* pay-wall button replies */
+  /* 1. choose language you receive */
+  if(user.language_step==="receive"){
+    const lang = pickLang(text);
+    if(!lang){
+      await sendMessage(from,
+        `${t("askReceive", user.ui_lang)}\n\n${buildMenu(user.ui_lang)}`
+      );
+      return;
+    }
+    if(lang.code===user.source_lang){
+      await sendMessage(from,
+        `${t("askReceive", user.ui_lang)}\n\n${buildMenu(user.ui_lang)}`
+      );
+      return;
+    }
+    await supabase.from("users").update({
+      target_lang: lang.code,
+      language_step:"gender"
+    }).eq("id", user.id);
+
+    await sendMessage(from, t("askGender", user.ui_lang));
+    return;
+  }
+
+  /* 2. choose voice gender */
+  if(user.language_step==="gender"){
+    let g=null;
+    if(/^1$/.test(text)||/male/i.test(text)) g="MALE";
+    if(/^2$/.test(text)||/female/i.test(text)) g="FEMALE";
+    if(!g){ await sendMessage(from,t("askGender",user.ui_lang)); return; }
+
+    await supabase.from("users").update({
+      voice_gender:g,
+      language_step:"ready"
+    }).eq("id", user.id);
+
+    await sendMessage(from, t("setupDone", user.ui_lang));
+    return;
+  }
+
+  /* 3. PAY-WALL quick replies */
   if(/^[1-3]$/.test(text)&&isFree&&user.free_used>=5){
-    const tier=text==="1"?"monthly":text==="2"?"annual":"life";
+    const tier = text==="1"?"monthly":text==="2"?"annual":"life";
     try{
-      const link=await checkoutUrl(user,tier);
+      const link = await checkoutUrl(user,tier);
       await sendMessage(from,`Tap to pay → ${link}`);
     }catch(e){
       console.error("Stripe checkout err:",e.message);
-      await sendMessage(from,"⚠️ Payment link error.  Try again later.");
+      await sendMessage(from,"⚠️ Payment link error. Try again later.");
     }
     return;
   }
 
-  /* English RESET command */
-  if(/^reset$/i.test(text)){
+  /* 4. reset cmd */
+  if(/^(reset|change language)$/i.test(text)){
     await supabase.from("users").update({
       language_step:"choose_ui",
-      ui_lang:null, source_lang:null, target_lang:null, voice_gender:null
+      ui_lang:null, source_lang:null, target_lang:null,
+      voice_gender:null
     }).eq("id",user.id);
-    await sendMessage(from,MENU_PROMPT);
+    await sendMessage(from, WELCOME);
     return;
   }
 
-  /* paywall gate */
-  if(isFree&&user.free_used>=5){ await sendMessage(from,PAYWALL[uiLang]); return; }
-
-  /* STEP 1: target language */
-  if(user.language_step==="target"){
-    const pick=pickLang(text);
-    if(!pick){ await sendMessage(from,ui.badReply+"\n\n"+menuList()); return; }
-    if(pick.code===user.source_lang){
-      await sendMessage(from,ui.targetDiff+"\n\n"+menuList()); return;
-    }
-    await supabase.from("users").update({
-      target_lang:pick.code,
-      language_step:"gender"
-    }).eq("id",user.id);
-    await sendMessage(from,ui.voice);
-    return;
+  /* 5. pay-wall gate */
+  if(isFree&&user.free_used>=5){
+    await sendMessage(from, PAYWALL); return;
   }
 
-  /* STEP 2: gender */
-  if(user.language_step==="gender"){
-    let g=null;
-    if(/^1$/.test(text)||/male/i.test(text))   g="MALE";
-    if(/^2$/.test(text)||/female/i.test(text)) g="FEMALE";
-    if(!g){ await sendMessage(from,ui.voice); return; }
-    await supabase.from("users").update({
-      voice_gender:g, language_step:"ready"
-    }).eq("id",user.id);
-    await sendMessage(from,ui.setupDone);
-    return;
-  }
-
-  /* guard */
+  /* 6. guard */
   if(!user.source_lang||!user.target_lang||!user.voice_gender){
-    await sendMessage(from,"⚠️ Setup incomplete.  Type reset to start over.");return;
+    await sendMessage(from,"⚠️ Setup incomplete. Type “reset” to start over."); return;
   }
+
 
   /* =================================================================
      Translation / TTS  (same as working build)
@@ -512,10 +528,7 @@ app.post(
     const { From, Body, NumMedia, MediaUrl0 } = req.body;
     res.set("Content-Type","text/xml").send("<Response></Response>");
     handleIncoming(
-      From,
-      (Body||"").trim(),
-      parseInt(NumMedia||"0",10),
-      MediaUrl0
+      From, (Body||"").trim(), parseInt(NumMedia||"0",10), MediaUrl0
     ).catch(e=>console.error("handleIncoming ERR",e));
   }
 );
