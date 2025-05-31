@@ -135,8 +135,7 @@ const UI = {
 \t2. Translation
 \t3. Audio reply in your language
 • Type “reset” anytime to switch languages.
-
-When it shines: quick travel chats, decoding a doctor’s or lawyer’s message, serving global customers, or brushing up on a new language—without ever leaving WhatsApp.`,
+• When it shines: quick travel chats, decoding a doctor’s or lawyer’s message, serving global customers, or brushing up on a new language—without ever leaving WhatsApp.`,
     askReceive: "🌎 What language do you RECEIVE messages in?",
     askGender: "🔊 Voice gender?\n1️⃣ Male\n2️⃣ Female",
     done: "✅ Setup complete!  Send a voice-note or text.",
