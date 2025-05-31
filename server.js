@@ -1,25 +1,23 @@
 /* ───────────────────────────────────────────────────────────────────────
-   TuCanChat server.js  —  WhatsApp voice↔text translator bot
-   • 5-language wizard          • Whisper + GPT-4o translate
-   • Google-TTS voices          • Stripe pay-wall (5 free)
-   • Supabase logging           • Self-healing Storage bucket
-   • 3-part voice-note reply    • Prefers en-US voice for English
-   • UI prompts localised in EN / ES / FR / PT / DE
+   TuCan server.js  —  WhatsApp voice↔text translator bot
+   • 5-language wizard (@welcome + reset)      • Whisper + GPT-4o translate
+   • Google-TTS voices (en-US preference)      • Stripe pay-wall (5 free)
+   • Supabase logging + self-healing bucket    • 3-part voice-note reply
 ────────────────────────────────────────────────────────────────────────*/
-import express          from "express";
-import bodyParser       from "body-parser";
-import fetch            from "node-fetch";
-import ffmpeg           from "fluent-ffmpeg";
-import fs               from "fs";
+import express    from "express";
+import bodyParser from "body-parser";
+import fetch      from "node-fetch";
+import ffmpeg     from "fluent-ffmpeg";
+import fs         from "fs";
 import { randomUUID as uuid } from "crypto";
-import OpenAI           from "openai";
-import Stripe           from "stripe";
-import twilio           from "twilio";
+import OpenAI     from "openai";
+import Stripe     from "stripe";
+import twilio     from "twilio";
 import { createClient } from "@supabase/supabase-js";
-import * as dotenv      from "dotenv";
+import * as dotenv from "dotenv";
 dotenv.config();
 
-/* ── crash guard ── */
+/* ── crash-guard ── */
 process.on("unhandledRejection", r => console.error("🔴 UNHANDLED", r));
 
 /* ── ENV ── */
@@ -36,7 +34,7 @@ const {
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
   TWILIO_PHONE_NUMBER,
-  PORT = 8080,
+  PORT = 8080
 } = process.env;
 const WHATSAPP_FROM =
   TWILIO_PHONE_NUMBER.startsWith("whatsapp:")
@@ -52,9 +50,9 @@ const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 /* ── express ── */
 const app = express();
 
-/* =====================================================================
-   ①  Stripe   – raw-body webhook (MUST be first)
-===================================================================== */
+/* ====================================================================
+   1️⃣  STRIPE WEBHOOK  (raw body)
+==================================================================== */
 app.post(
   "/stripe-webhook",
   bodyParser.raw({ type: "application/json" }),
@@ -72,20 +70,17 @@ app.post(
     }
 
     if (event.type === "checkout.session.completed") {
-      const s = event.data.object;
-      const plan = s.metadata.tier === "monthly"
-        ? "MONTHLY"
-        : s.metadata.tier === "annual"
-        ? "ANNUAL"
-        : "LIFETIME";
+      const s    = event.data.object;
+      const plan = s.metadata.tier === "monthly" ? "MONTHLY"
+                 : s.metadata.tier === "annual"  ? "ANNUAL"
+                 : "LIFETIME";
 
-      /* ① try by stripe_cust_id ─────────────────────────────── */
+      /* try by stripe_cust_id  →  fallback by uid */
       const upd1 = await supabase
         .from("users")
         .update({ plan, free_used: 0, stripe_sub_id: s.subscription })
         .eq("stripe_cust_id", s.customer);
 
-      /* ② fallback by metadata.uid (created when checkout link built) */
       if (upd1.data?.length === 0) {
         await supabase
           .from("users")
@@ -93,7 +88,7 @@ app.post(
             plan,
             free_used: 0,
             stripe_cust_id: s.customer,
-            stripe_sub_id: s.subscription,
+            stripe_sub_id:  s.subscription
           })
           .eq("id", s.metadata.uid);
       }
@@ -110,30 +105,23 @@ app.post(
   }
 );
 
-/* =====================================================================
-   ②  Constants / text snippets
-===================================================================== */
-const LANGS = {
-  en: { name: "English"    },
-  es: { name: "Spanish"    },
-  fr: { name: "French"     },
-  pt: { name: "Portuguese" },
-  de: { name: "German"     },
-};
+/* ====================================================================
+   2️⃣  CONSTANTS / HELPERS
+==================================================================== */
 const MENU = {
-  1: { code: "en", name: LANGS.en.name },
-  2: { code: "es", name: LANGS.es.name },
-  3: { code: "fr", name: LANGS.fr.name },
-  4: { code: "pt", name: LANGS.pt.name },
-  5: { code: "de", name: LANGS.de.name },
+  1:{ name:"English",    code:"en" },
+  2:{ name:"Spanish",    code:"es" },
+  3:{ name:"French",     code:"fr" },
+  4:{ name:"Portuguese", code:"pt" },
+  5:{ name:"German",     code:"de" }
 };
 const DIGITS = Object.keys(MENU);
 
-const i18n = {
-  en: {
-    welcome:
-      "👋 Welcome to TuCanChat!  Please choose your language:",
-    howItWorks: `📌 How TuCanChat works
+const MENU_PROMPT = `👋 Welcome to TuCanChat!  Please choose your language:\n\n${DIGITS.map(
+  d=>`${d}️⃣ ${MENU[d].name} (${MENU[d].code})`).join("\n")}`;
+
+const HOW_WORKS = {
+  en: `📌 How TuCanChat works
 • Send any voice note or text.
 • I instantly deliver:
  1. Heard: your exact words
@@ -141,120 +129,88 @@ const i18n = {
  3. Audio reply in your language
 • Type “reset” anytime to switch languages.
 
-When it shines: quick travel chats, decoding a doctor’s or lawyer’s message, serving global customers, or brushing up on a new language—without ever leaving WhatsApp.`,
-    pickReceive: "🌎 What language do you RECEIVE messages in?",
-    genderQ:     "🔊 Voice gender?\n1️⃣ Male\n2️⃣ Female",
-    complete:    "✅ Setup complete!  Send a voice-note or text.",
-    badNumber:   "❌ Reply 1-5.",
-    targetSame:  "⚠️ Target must differ.",
-  },
-  es: {
-    welcome:
-      "👋 ¡Bienvenido a TuCanChat!  Elige tu idioma:",
-    howItWorks: `📌 Cómo funciona TuCanChat
-• Envía cualquier nota de voz o texto.
-• Recibirás al instante:
- 1. Heard: tus palabras exactas
+When it shines: quick travel chats, decoding a doctor or lawyer, serving global customers, or brushing up on a new language—without ever leaving WhatsApp.`,
+
+  es: `📌 Cómo funciona TuCanChat
+• Envía una nota de voz o texto.
+• Yo entrego al instante:
+ 1. Escuchado: tus palabras exactas
  2. Traducción
- 3. Respuesta de audio en tu idioma
+ 3. Audio en tu idioma
 • Escribe “reset” en cualquier momento para cambiar de idioma.
 
-Ideal para viajes, interpretar mensajes médicos o legales, atender clientes globales o practicar un nuevo idioma sin salir de WhatsApp.`,
-    pickReceive: "🌎 ¿En qué idioma RECIBES mensajes?",
-    genderQ:     "🔊 Voz:\n1️⃣ Masculina\n2️⃣ Femenina",
-    complete:    "✅ ¡Listo!  Envía una nota de voz o texto.",
-    badNumber:   "❌ Responde 1-5.",
-    targetSame:  "⚠️ El destino debe ser diferente.",
-  },
-  fr: {
-    welcome:
-      "👋 Bienvenue sur TuCanChat ! Choisissez votre langue :",
-    howItWorks: `📌 Comment fonctionne TuCanChat
-• Envoyez n’importe quelle note vocale ou texte.
-• Je réponds immédiatement :
- 1. Heard : vos mots exacts
- 2. Traduction
- 3. Réponse audio dans votre langue
-• Tapez “reset” à tout moment pour changer de langue.
+Ideal para: viajes, aclarar mensajes médicos o legales, atender clientes globales o practicar un idioma sin salir de WhatsApp.`,
 
-Parfait pour voyager, comprendre un médecin ou un avocat, servir des clients internationaux ou pratiquer une nouvelle langue sans quitter WhatsApp.`,
-    pickReceive: "🌎 Dans quelle langue RECEVEZ-vous les messages ?",
-    genderQ:     "🔊 Genre de la voix ?\n1️⃣ Homme\n2️⃣ Femme",
-    complete:    "✅ Configuration terminée ! Envoyez une note vocale ou un texte.",
-    badNumber:   "❌ Répondez 1-5.",
-    targetSame:  "⚠️ La langue cible doit être différente.",
-  },
-  pt: {
-    welcome:
-      "👋 Bem-vindo ao TuCanChat!  Escolha seu idioma:",
-    howItWorks: `📌 Como o TuCanChat funciona
+  fr: `📌 Comment fonctionne TuCanChat
+• Envoie un message vocal ou texte.
+• Je réponds instantanément :
+ 1. Entendu : tes mots exacts
+ 2. Traduction
+ 3. Audio dans ta langue
+• Tape “reset” à tout moment pour changer de langue.
+
+Parfait pour : voyages, compréhension de médecins/avocats, service client mondial ou apprentissage d’une langue sans quitter WhatsApp.`,
+
+  pt: `📌 Como o TuCanChat funciona
 • Envie qualquer áudio ou texto.
-• Eu retorno instantaneamente:
- 1. Heard: suas palavras exatas
+• Eu entrego instantaneamente:
+ 1. Ouvido: suas palavras
  2. Tradução
- 3. Resposta de áudio no seu idioma
+ 3. Áudio no seu idioma
 • Digite “reset” a qualquer momento para trocar de idioma.
 
-Perfeito para viagens, entender mensagens de médicos ou advogados, atender clientes globais ou praticar um novo idioma – tudo dentro do WhatsApp.`,
-    pickReceive: "🌎 Em qual idioma você RECEBE mensagens?",
-    genderQ:     "🔊 Voz:\n1️⃣ Masculina\n2️⃣ Feminina",
-    complete:    "✅ Pronto! Envie um áudio ou texto.",
-    badNumber:   "❌ Responda 1-5.",
-    targetSame:  "⚠️ O destino deve ser diferente.",
-  },
-  de: {
-    welcome:
-      "👋 Willkommen bei TuCanChat!  Bitte wähle deine Sprache:",
-    howItWorks: `📌 So funktioniert TuCanChat
-• Sende eine Sprachnachricht oder einen Text.
+Ótimo para: viagens, entender médicos ou advogados, atender clientes globais ou praticar um novo idioma sem sair do WhatsApp.`,
+
+  de: `📌 So funktioniert TuCanChat
+• Sende eine Sprachnachricht oder Text.
 • Ich liefere sofort:
- 1. Heard: deine genauen Worte
+ 1. Gehört: deine Worte
  2. Übersetzung
- 3. Audio-Antwort in deiner Sprache
+ 3. Audio in deiner Sprache
 • Tippe jederzeit “reset”, um die Sprache zu wechseln.
 
-Ideal für Reisen, das Entziffern von Arzt-/Anwalts­nachrichten, internationalen Kundenservice oder zum Sprachenlernen – direkt in WhatsApp.`,
-    pickReceive: "🌎 In welcher Sprache ERHÄLTST du Nachrichten?",
-    genderQ:     "🔊 Stimmtyp?\n1️⃣ Männlich\n2️⃣ Weiblich",
-    complete:    "✅ Einrichtung abgeschlossen!  Sende eine Sprachnachricht oder Text.",
-    badNumber:   "❌ Antworte mit 1-5.",
-    targetSame:  "⚠️ Zielsprache muss abweichen.",
-  },
+Perfekt für Reisen, Arzt- oder Anwaltstexte, weltweiten Kundensupport oder Sprachtraining – alles in WhatsApp.`
 };
-
-/* helper: numbered menu in correct language */
-const menuList = lang =>
-  DIGITS
-    .map(d => `${d}️⃣ ${MENU[d].name} (${MENU[d].code})`)
-    .join("\n");
 
 const paywallMsg = {
-  en: `⚠️ You’ve used your 5 free translations.
-
-1️⃣ Monthly  $4.99
-2️⃣ Annual   $49.99
-3️⃣ Lifetime $199`,
-  es: `⚠️ Has usado tus 5 traducciones gratis.
-
-1️⃣ Mensual  $4.99
-2️⃣ Anual    $49.99
-3️⃣ De por vida $199`,
-  fr: `⚠️ Vous avez utilisé vos 5 traductions gratuites.
-
-1️⃣ Mensuel  4,99 $
-2️⃣ Annuel   49,99 $
-3️⃣ À vie    199 $`,
-  pt: `⚠️ Você usou suas 5 traduções grátis.
-
-1️⃣ Mensal   US$ 4,99
-2️⃣ Anual    US$ 49,99
-3️⃣ Vitalício US$ 199`,
-  de: `⚠️ Du hast deine 5 kostenlosen Übersetzungen genutzt.
-
-1️⃣ Monatlich  4,99 $
-2️⃣ Jährlich   49,99 $
-3️⃣ Lebenslang 199 $`,
+  en:`⚠️ You’ve used your 5 free translations.\n\nChoose a plan:\n1️⃣ Monthly  $4.99\n2️⃣ Annual   $49.99\n3️⃣ Lifetime $199`,
+  es:`⚠️ Has usado tus 5 traducciones gratis.\n\nElige un plan:\n1️⃣ Mensual  $4.99\n2️⃣ Anual    $49.99\n3️⃣ De por vida $199`,
+  fr:`⚠️ Vous avez utilisé vos 5 traductions gratuites.\n\nChoisissez une offre :\n1️⃣ Mensuel  4,99 $\n2️⃣ Annuel   49,99 $\n3️⃣ À vie    199 $`,
+  pt:`⚠️ Você usou suas 5 traduções grátis.\n\nEscolha um plano:\n1️⃣ Mensal   $4.99\n2️⃣ Anual    $49.99\n3️⃣ Vitalício $199`,
+  de:`⚠️ Du hast deine 5 kostenlosen Übersetzungen verbraucht.\n\nWähle einen Plan:\n1️⃣ Monatlich  $4,99\n2️⃣ Jährlich   $49,99\n3️⃣ Lebenslang $199`
 };
+
+const LANG_UI = {
+  en:{ receive:`🌎 What language do you RECEIVE messages in?`,
+       voice:`🔊 Voice gender?\n1️⃣ Male\n2️⃣ Female`,
+       setupDone:`✅ Setup complete!  Send a voice-note or text.`,
+       targetDiff:`⚠️ Target must differ.`, badReply:`❌ Reply 1-5.` },
+  es:{ receive:`🌎 ¿En qué idioma RECIBES mensajes?`,
+       voice:`🔊 ¿Género de voz?\n1️⃣ Masculino\n2️⃣ Femenino`,
+       setupDone:`✅ Configuración lista. Envía un audio o texto.`,
+       targetDiff:`⚠️ El idioma destino debe ser distinto.`, badReply:`❌ Responde 1-5.` },
+  fr:{ receive:`🌎 Dans quelle langue RECEVEZ-vous les messages ?`,
+       voice:`🔊 Genre de voix ?\n1️⃣ Homme\n2️⃣ Femme`,
+       setupDone:`✅ Configuration terminée ! Envoie une note vocale ou un texte.`,
+       targetDiff:`⚠️ La langue cible doit être différente.`, badReply:`❌ Réponds 1-5.` },
+  pt:{ receive:`🌎 Em que idioma você RECEBE mensagens?`,
+       voice:`🔊 Gênero de voz?\n1️⃣ Masculino\n2️⃣ Feminino`,
+       setupDone:`✅ Configuração pronta! Envie áudio ou texto.`,
+       targetDiff:`⚠️ Idioma de destino deve ser diferente.`, badReply:`❌ Responda 1-5.` },
+  de:{ receive:`🌎 In welcher Sprache ERHÄLTST du Nachrichten?`,
+       voice:`🔊 Stimmgeschlecht?\n1️⃣ Männlich\n2️⃣ Weiblich`,
+       setupDone:`✅ Einrichtung abgeschlossen!  Sende eine Sprachnachricht oder Text.`,
+       targetDiff:`⚠️ Zielsprache muss abweichen.`, badReply:`❌ Antworte 1-5.` }
+};
+
+/* — generic helpers — */
+const toWav = (i,o)=>new Promise((res,rej)=>
+  ffmpeg(i).audioCodec("pcm_s16le")
+    .outputOptions(["-ac","1","-ar","16000","-f","wav"])
+    .on("error",rej).on("end",()=>res(o))
+    .save(o)
+);
+
 
 /* ====================================================================
    3️⃣  AUDIO & AI HELPERS  (unchanged from working build)
@@ -402,38 +358,36 @@ async function sendMessage(to,body="",mediaUrl){
   if(mediaUrl) p.mediaUrl=[mediaUrl]; else p.body=body;
   await twilioClient.messages.create(p);
 }
-
 /* log row */
 const logRow=d=>supabase.from("translations").insert({ ...d,id:uuid() });
 
 /* ====================================================================
    4️⃣  Main handler
 ==================================================================== */
-async function handleIncoming(from, text, num, mediaUrl) {
-  if (!from) return;
+async function handleIncoming(from,text,num,mediaUrl){
+  if(!from) return;
 
-  /* fetch or create user row */
-  let { data: user } = await supabase
-    .from("users")
-    .select("*")
-    .eq("phone_number", from)
-    .single();
+  /* fetch/create user */
+  let { data:user } = await supabase
+    .from("users").select("*")
+    .eq("phone_number",from).single();
 
-  if (!user) {
-    ({ data: user } = await supabase
-      .from("users")
-      .upsert(
-        {
-          phone_number: from,
-          ui_lang: null,          // not chosen yet
-          language_step: "choose_ui",
-          plan: "FREE",
-          free_used: 0,
-        },
-        { onConflict: ["phone_number"] }
-      )
-      .select("*")
-      .single());
+  if(!user){
+    ({ data:user } = await supabase.from("users").upsert(
+      { phone_number:from, language_step:"welcome", plan:"FREE", free_used:0 },
+      { onConflict:["phone_number"] }
+    ).select("*").single());
+  }
+  const ui = LANG_UI[user.source_lang||"en"];
+  const isFree = !user.plan || user.plan==="FREE";
+
+  /* FIRST contact or reset */
+  if(user.language_step==="welcome"){
+    await sendMessage(from, MENU_PROMPT);
+    await supabase.from("users")
+      .update({ language_step:"source" })
+      .eq("id", user.id);
+    return;
   }
 
   /* helper to fetch right strings */
@@ -506,42 +460,53 @@ async function handleIncoming(from, text, num, mediaUrl) {
     return;
   }
 
-  /* wizard: pick RECEIVE language (target_lang) */
-  if (user.language_step === "target") {
+   /* wizard STEP 1: pick self-language */
+  if(user.language_step==="source"){
     const choice = pickLang(text);
-    if (choice) {
-      if (choice.code === user.source_lang) {
-        await sendMessage(
-          from,
-          `${L("targetSame")}\n\n${menuList(user.ui_lang)}`
-        );
-        return;
-      }
-      await supabase
-        .from("users")
-        .update({ target_lang: choice.code, language_step: "gender" })
-        .eq("id", user.id);
-      await sendMessage(from, L("genderQ"));
-    } else {
-      await sendMessage(from, `${L("badNumber")}\n${menuList(user.ui_lang)}`);
-    }
+    if(!choice){ await sendMessage(from,MENU_PROMPT+"\n"+ui.badReply); return; }
+
+    await supabase.from("users").update({
+      source_lang: choice.code,
+      language_step:"how"
+    }).eq("id",user.id);
+
+    await sendMessage(from, HOW_WORKS[choice.code]);                     // how-it-works in chosen
+    await sendMessage(from, LANG_UI[choice.code].receive);               // ask receive-lang
     return;
   }
 
-  /* wizard: gender */
-  if (user.language_step === "gender") {
-    let g = null;
-    if (/^1$/.test(text) || /male/i.test(text))   g = "MALE";
-    if (/^2$/.test(text) || /female/i.test(text)) g = "FEMALE";
-    if (g) {
-      await supabase
-        .from("users")
-        .update({ voice_gender: g, language_step: "ready" })
-        .eq("id", user.id);
-      await sendMessage(from, L("complete"));
-    } else {
-      await sendMessage(from, `${L("genderQ")}`);
+  /* STEP 2: receive language */
+  if(user.language_step==="how"){
+    const choice = pickLang(text);
+    if(!choice){ await sendMessage(from,LANG_UI[user.source_lang].badReply); return; }
+
+    if(choice.code===user.source_lang){
+      await sendMessage(from,LANG_UI[user.source_lang].targetDiff+"\n"+
+                            MENU_PROMPT.replace("👋 Welcome to TuCanChat!  ",""));
+      return;
     }
+
+    await supabase.from("users").update({
+      target_lang: choice.code,
+      language_step:"gender"
+    }).eq("id",user.id);
+
+    await sendMessage(from, LANG_UI[user.source_lang].voice);
+    return;
+  }
+
+  /* STEP 3: gender */
+  if(user.language_step==="gender"){
+    let g=null;
+    if(/^1$/.test(text)||/male/i.test(text))   g="MALE";
+    if(/^2$/.test(text)||/female/i.test(text)) g="FEMALE";
+    if(!g){ await sendMessage(from,LANG_UI[user.source_lang].voice); return; }
+
+    await supabase.from("users").update({
+      voice_gender:g, language_step:"ready"
+    }).eq("id",user.id);
+
+    await sendMessage(from, LANG_UI[user.source_lang].setupDone);
     return;
   }
 
@@ -608,21 +573,22 @@ async function handleIncoming(from, text, num, mediaUrl) {
 ==================================================================== */
 app.post(
   "/webhook",
-  bodyParser.urlencoded({ extended: false, limit: "2mb" }),
-  (req, res) => {
-    if (!req.body || !req.body.From) {
-      return res.set("Content-Type", "text/xml").send("<Response></Response>");
+  bodyParser.urlencoded({ extended:false, limit:"2mb" }),
+  (req,res)=>{
+    if(!req.body||!req.body.From){
+      return res.set("Content-Type","text/xml").send("<Response></Response>");
     }
     const { From, Body, NumMedia, MediaUrl0 } = req.body;
-    res.set("Content-Type", "text/xml").send("<Response></Response>");
+    res.set("Content-Type","text/xml").send("<Response></Response>");
     handleIncoming(
       From,
-      (Body || "").trim(),
-      parseInt(NumMedia || "0", 10),
+      (Body||"").trim(),
+      parseInt(NumMedia||"0",10),
       MediaUrl0
-    ).catch((e) => console.error("handleIncoming ERR", e));
+    ).catch(e=>console.error("handleIncoming ERR",e));
   }
 );
 
-app.get("/healthz", (_, r) => r.send("OK"));
-app.listen(PORT, () => console.log("🚀 running on", PORT));
+/* health */
+app.get("/healthz",(_,r)=>r.send("OK"));
+app.listen(PORT,()=>console.log("🚀 running on",PORT));
