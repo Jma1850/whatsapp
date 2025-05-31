@@ -381,7 +381,7 @@ async function handleIncoming(from,text,num,mediaUrl){
   if(!original){ await sendMessage(from,"⚠️ Send text or a voice note."); return; }
 
   const dest       = detected===user.target_lang ? user.source_lang : user.target_lang;
-  const translated = await gptTranslate(original,dest);
+  const translated = await Translate(original,dest);
 
   if(isFree){
     await supabase.from("users")
