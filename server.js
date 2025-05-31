@@ -425,7 +425,7 @@ async function handleIncoming(from, text, num, mediaUrl) {
       .from("users")
       .insert({                                   // ← explicitly set wizard start
         phone_number: from,
-        language_step: "choose_ui",
+        language_step: "welcome",
       })             // defaults fill the rest
       .select("*")
       .single();                                  // always returns the row
