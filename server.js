@@ -370,29 +370,34 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
   }
 
   /* 4. onboarding wizard ----------------------------------- */
-/* 4a. pick TARGET language (the language TuCanChat will reply in) */
+/* 4a.  pick TARGET language (TuCanChat’s reply language) */
 if (user.language_step === "target") {
   const choice = pickLang(text);
   if (choice) {
-    /* save target and advance */
+    /* save target & advance */
     await supabase
       .from("users")
       .update({ target_lang: choice.code, language_step: "source" })
       .eq("phone_number", from);
 
-    /* 1️⃣  “How TuCanChat works” — translated */
+    /* 1️⃣  send “How TuCanChat works” (translated) */
     const how = await translate(HOW_TEXT, choice.code);
     await sendMessage(from, how);
 
-    /* 2️⃣  build the heading + menu, then translate the whole block */
-    const menuEn = `Choose the language you RECEIVE messages in:
-1) English (en)
+    /* 2️⃣  build a two-part prompt  */
+    const heading = await translate(
+      "Choose the language you RECEIVE messages in:",
+      choice.code
+    );
+    const menuRaw = `1) English (en)
 2) Spanish (es)
 3) French (fr)
 4) Portuguese (pt)
 5) German (de)`;
-    const menuTranslated = await translate(menuEn, choice.code);
-    await sendMessage(from, menuTranslated);
+    const menuTranslated = await translate(menuRaw, choice.code);
+
+    /* 3️⃣  heading + menu in ONE message */
+    await sendMessage(from, `${heading}\n${menuTranslated}`);
   } else {
     await sendMessage(
       from,
@@ -401,6 +406,7 @@ if (user.language_step === "target") {
   }
   return;
 }
+
 
 
   /* 4b. pick SOURCE language (user’s sending language) */
