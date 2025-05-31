@@ -1,9 +1,11 @@
-/* ───────────────────────────────────────────────────────────────────────
-   TuCan server.js  —  WhatsApp voice↔text translator bot
-   • 5-language onboarding wizard (@welcome + reset) • Whisper + GPT-4o
-   • Google-TTS voices (prefers en-US)               • Stripe pay-wall (5 free)
-   • Supabase logging + self-healing bucket          • 3-part voice-note reply
-────────────────────────────────────────────────────────────────────────*/
+/* ──────────────────────────────────────────────────────────────────────
+   TuCanChat server.js   –   WhatsApp voice ↔ text translator bot
+   ────────────────────────────────────────────────────────────────────
+   • Five-language onboard wizard      • Whisper-v3 + GPT-4o-mini
+   • Google-TTS voices (en-US pref.)   • 3-part voice-note reply
+   • Stripe pay-wall after 5 uses      • Supabase logging + bucket heal
+   • “reset” is ALWAYS English         • Localised UI prompts
+────────────────────────────────────────────────────────────────────── */
 import express    from "express";
 import bodyParser from "body-parser";
 import fetch      from "node-fetch";
@@ -14,94 +16,174 @@ import OpenAI     from "openai";
 import Stripe     from "stripe";
 import twilio     from "twilio";
 import { createClient } from "@supabase/supabase-js";
-import * as dotenv from "dotenv";
-dotenv.config();
+import * as dotenv from "dotenv"; dotenv.config();
 
-/* ── crash-guard ── */
+/* ── crash guard ───────────────────────────────────────────────────── */
 process.on("unhandledRejection", r => console.error("🔴 UNHANDLED", r));
 
-/* ── ENV ── */
+/* ── ENV ───────────────────────────────────────────────────────────── */
 const {
-  SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY,
-  OPENAI_API_KEY,
-  GOOGLE_TTS_KEY,
-  STRIPE_SECRET_KEY,
-  STRIPE_WEBHOOK_SECRET,
-  PRICE_MONTHLY,
-  PRICE_ANNUAL,
-  PRICE_LIFE,
-  TWILIO_ACCOUNT_SID,
-  TWILIO_AUTH_TOKEN,
-  TWILIO_PHONE_NUMBER,
+  SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
+  OPENAI_API_KEY, GOOGLE_TTS_KEY,
+  STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
+  PRICE_MONTHLY, PRICE_ANNUAL, PRICE_LIFE,
+  TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER,
   PORT = 8080
 } = process.env;
+
 const WHATSAPP_FROM =
   TWILIO_PHONE_NUMBER.startsWith("whatsapp:")
     ? TWILIO_PHONE_NUMBER
     : `whatsapp:${TWILIO_PHONE_NUMBER}`;
 
-/* ── clients ── */
-const supabase     = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-const openai       = new OpenAI({ apiKey: OPENAI_API_KEY });
-const stripe       = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" });
+/* ── clients ───────────────────────────────────────────────────────── */
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+const openai   = new OpenAI({ apiKey: OPENAI_API_KEY });
+const stripe   = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" });
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
-/* ── express ── */
-const app = express();
+/* ── express ───────────────────────────────────────────────────────── */
+const app = express();                     // will add parsers later
 
 /* ====================================================================
-   1️⃣  STRIPE WEBHOOK  (raw body)
+   0️⃣  STATIC LANGUAGE INFO
+==================================================================== */
+const MENU = {
+  1: { name:"English",    code:"en" },
+  2: { name:"Spanish",    code:"es" },
+  3: { name:"French",     code:"fr" },
+  4: { name:"Portuguese", code:"pt" },
+  5: { name:"German",     code:"de" }
+};
+const DIGITS = Object.keys(MENU);
+const pickLang = txt => {
+  const m = txt.trim(), d = m.match(/^\d/);
+  if (d && MENU[d[0]]) return MENU[d[0]];
+  const lc = m.toLowerCase();
+  return Object.values(MENU).find(
+    o => o.code === lc || o.name.toLowerCase() === lc
+  );
+};
+/* very small UI-string dictionary */
+const L = {
+  en: {
+    how:
+`📌 How TuCanChat works
+• Send any voice note or text.
+• I instantly deliver:
+  1. Heard: your exact words
+  2. Translation
+  3. Audio reply in your language
+• Type “reset” anytime to switch languages.`,
+    askReceive : "🌎 What language do you RECEIVE messages in?",
+    askGender  : "🔊 Voice gender?\n1️⃣ Male\n2️⃣ Female",
+    setupDone  : "✅ Setup complete!  Send a voice-note or text."
+  },
+  es: {
+    how:
+`📌 Cómo funciona TuCanChat
+• Envía una nota de voz o texto.
+• Yo te devuelvo al instante:
+  1. Oído: tus palabras exactas
+  2. Traducción
+  3. Audio en tu idioma
+• Escribe “reset” para cambiar de idioma.`,
+    askReceive : "🌎 ¿En qué idioma RECIBES los mensajes?",
+    askGender  : "🔊 Género de voz:\n1️⃣ Masculino\n2️⃣ Femenino",
+    setupDone  : "✅ ¡Listo! Envía una nota de voz o texto."
+  },
+  fr: {
+    how:
+`📌 Comment fonctionne TuCanChat
+• Envoie une note vocale ou un texte.
+• Je réponds aussitôt :
+  1. Entendu : tes mots exacts
+  2. Traduction
+  3. Audio dans ta langue
+• Tape “reset” pour changer de langue.`,
+    askReceive : "🌎 Quelle langue pour RECEVOIR les messages ?",
+    askGender  : "🔊 Voix :\n1️⃣ Homme\n2️⃣ Femme",
+    setupDone  : "✅ Configuration terminée ! Envoie un message vocal ou texte."
+  },
+  pt: {
+    how:
+`📌 Como o TuCanChat funciona
+• Envie qualquer áudio ou texto.
+• Eu retorno na hora:
+  1. Ouvi: suas palavras exatas
+  2. Tradução
+  3. Áudio no seu idioma
+• Digite “reset” para mudar de idioma.`,
+    askReceive : "🌎 Em que idioma você RECEBE mensagens?",
+    askGender  : "🔊 Gênero da voz:\n1️⃣ Masculino\n2️⃣ Feminino",
+    setupDone  : "✅ Pronto! Envie um áudio ou texto."
+  },
+  de: {
+    how:
+`📌 So funktioniert TuCanChat
+• Sende eine Sprachnachricht oder Text.
+• Ich liefere sofort:
+  1. Gehört: deine Worte
+  2. Übersetzung
+  3. Audio in deiner Sprache
+• Tippe “reset”, um die Sprache zu wechseln.`,
+    askReceive : "🌎 In welcher Sprache ERHÄLTST du Nachrichten?",
+    askGender  : "🔊 Stimmgeschlecht:\n1️⃣ Männlich\n2️⃣ Weiblich",
+    setupDone  : "✅ Fertig! Sende eine Sprachnachricht oder Text."
+  }
+};
+const t = (key, lang) => (L[lang] ?? L.en)[key];
+
+/* helper that prints the numeric language menu in the UI language */
+const buildMenu = lang =>
+  DIGITS.map(d => `${d}️⃣ ${MENU[d].name} (${MENU[d].code})`).join("\n");
+
+/* initial welcome (always English to guarantee emoji order) */
+const WELCOME =
+`👋 Welcome to TuCanChat!  Please choose your language:\n\n${buildMenu("en")}`;
+
+/* pay-wall message stays English (short & clear) */
+const PAYWALL =
+`⚠️ You’ve used your 5 free translations.
+
+1️⃣ Monthly  $4.99
+2️⃣ Annual   $49.99
+3️⃣ Lifetime $199`;
+
+/* ====================================================================
+   1️⃣  STRIPE WEBHOOK  (raw body first)
 ==================================================================== */
 app.post(
   "/stripe-webhook",
-  bodyParser.raw({ type: "application/json" }),
-  async (req, res) => {
+  bodyParser.raw({ type:"application/json" }),
+  async (req,res) => {
     let event;
-    try {
+    try{
       event = stripe.webhooks.constructEvent(
-        req.body,
-        req.headers["stripe-signature"],
-        STRIPE_WEBHOOK_SECRET
+        req.body, req.headers["stripe-signature"], STRIPE_WEBHOOK_SECRET
       );
-    } catch (e) {
-      console.error("stripe sig err", e.message);
-      return res.sendStatus(400);
-    }
+    }catch(e){ console.error("stripe sig err",e.message); return res.sendStatus(400); }
 
-    if (event.type === "checkout.session.completed") {
-      const s    = event.data.object;
-      const plan = s.metadata.tier === "monthly" ? "MONTHLY"
-                 : s.metadata.tier === "annual"  ? "ANNUAL"
-                 : "LIFETIME";
+    if(event.type==="checkout.session.completed"){
+      const s=event.data.object;
+      const plan = s.metadata.tier==="monthly"?"MONTHLY"
+                 :s.metadata.tier==="annual" ?"ANNUAL":"LIFETIME";
 
-      /* try by stripe_cust_id → fallback by uid */
-      const upd1 = await supabase
-        .from("users")
-        .update({ plan, free_used: 0, stripe_sub_id: s.subscription })
+      const upd = await supabase.from("users")
+        .update({ plan, free_used:0, stripe_sub_id:s.subscription })
         .eq("stripe_cust_id", s.customer);
 
-      if (upd1.data?.length === 0) {
-        await supabase
-          .from("users")
-          .update({
-            plan,
-            free_used: 0,
-            stripe_cust_id: s.customer,
-            stripe_sub_id:  s.subscription
-          })
-          .eq("id", s.metadata.uid);
+      if(upd.data?.length===0){
+        await supabase.from("users").update({
+          plan, free_used:0, stripe_cust_id:s.customer, stripe_sub_id:s.subscription
+        }).eq("id", s.metadata.uid);
       }
     }
-
-    if (event.type === "customer.subscription.deleted") {
-      const sub = event.data.object;
-      await supabase
-        .from("users")
-        .update({ plan: "FREE" })
-        .eq("stripe_sub_id", sub.id);
+    if(event.type==="customer.subscription.deleted"){
+      const sub=event.data.object;
+      await supabase.from("users").update({plan:"FREE"}).eq("stripe_sub_id",sub.id);
     }
-    res.json({ received: true });
+    res.json({received:true});
   }
 );
 
