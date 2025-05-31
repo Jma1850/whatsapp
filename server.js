@@ -1,9 +1,9 @@
 /* ───────────────────────────────────────────────────────────────────────
    TuCan server.js  —  WhatsApp voice↔text translator bot
-   • Welcome-language picker     • 5-language wizard
+   • first-run language picker   • 5-language wizard (source → gender)
    • Whisper + GPT-4o translate  • Google-TTS voices
-   • Stripe pay-wall (5 free)    • Supabase logging & self-healing bucket
-   • 3-part voice-note reply     • Prefers en-US voice for English
+   • 3-part voice-note reply     • Stripe pay-wall (5 free)
+   • Supabase logging / storage  • Prefers en-US voice for English
 ────────────────────────────────────────────────────────────────────────*/
 import express    from "express";
 import bodyParser from "body-parser";
@@ -52,7 +52,7 @@ const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 const app = express();
 
 /* ====================================================================
-   1️⃣  STRIPE WEBHOOK  (raw body) — unchanged
+   1️⃣  STRIPE WEBHOOK  (raw body)
 ==================================================================== */
 app.post(
   "/stripe-webhook",
@@ -129,23 +129,165 @@ const pickLang = txt => {
 
 const HOW_IT_WORKS_EN =
 `Send a voice note or text ➜
-• I transcribe & translate it
-• You receive text + audio reply
-Send “reset” anytime to change languages.`.trim();
+• I'll transcribe & translate it
+• You get back text + audio
+Type “reset” anytime to change languages.`.trim();
 
 const paywallMsg =
-`⚠️ You’ve used your 5 free translations. For unlimited access, choose:
+`⚠️ You’ve used your 5 free translations. For unlimited access choose:
 
 1️⃣ Monthly  $4.99
 2️⃣ Annual   $49.99
 3️⃣ Lifetime $199`;
 
-/* ── (all audio / TTS / storage / Stripe helpers remain unchanged) ── */
-⋯    /* — SNIPPED FOR BREVITY:  toWav, whisper, detectLang, translate,
-         loadVoices/pickVoice, tts, ensureBucket, uploadAudio,
-         ensureCustomer, checkoutUrl, sendMessage, logRow — remain identical
-         to the working code you supplied. */
-      
+/* ───────── audio helpers ───────── */
+const toWav = (i,o)=>new Promise((res,rej)=>
+  ffmpeg(i).audioCodec("pcm_s16le")
+    .outputOptions(["-ac","1","-ar","16000","-f","wav"])
+    .on("error",rej).on("end",()=>res(o))
+    .save(o)
+);
+async function whisper(wav){
+  try{
+    const r = await openai.audio.transcriptions.create({
+      model:"whisper-large-v3",
+      file:fs.createReadStream(wav),
+      response_format:"json"
+    });
+    return { txt:r.text, lang:(r.language||"").slice(0,2) };
+  }catch{
+    const r = await openai.audio.transcriptions.create({
+      model:"whisper-1",
+      file:fs.createReadStream(wav),
+      response_format:"json"
+    });
+    return { txt:r.text, lang:(r.language||"").slice(0,2) };
+  }
+}
+const detectLang = async q =>
+  (await fetch(
+    `https://translation.googleapis.com/language/translate/v2/detect?key=${GOOGLE_TTS_KEY}`,
+    {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({q})}
+  ).then(r=>r.json())).data.detections[0][0].language;
+async function translate(text,target){
+  const r=await openai.chat.completions.create({
+    model:"gpt-4o-mini",
+    messages:[
+      {role:"system",content:`Translate to ${target}. Return ONLY the translation.`},
+      {role:"user",  content:text}
+    ],
+    max_tokens:400
+  });
+  return r.choices[0].message.content.trim();
+}
+
+/* Google TTS voices */
+let voiceCache=null;
+async function loadVoices(){
+  if(voiceCache)return;
+  const {voices}=await fetch(
+    `https://texttospeech.googleapis.com/v1/voices?key=${GOOGLE_TTS_KEY}`
+  ).then(r=>r.json());
+  voiceCache=voices.reduce((m,v)=>{
+    v.languageCodes.forEach(full=>{
+      const code=full.split("-",1)[0];
+      (m[code]||=[]).push(v);
+    });
+    return m;
+  },{});
+}
+(async()=>{try{await loadVoices();console.log("🔊 voice cache ready");}catch{}})();
+async function pickVoice(lang,gender){
+  await loadVoices();
+  let list=(voiceCache[lang]||[]).filter(v=>v.ssmlGender===gender);
+  if(!list.length) list=voiceCache[lang]||[];
+
+  if(lang==="en"){
+    const us=list.filter(v=>v.name.startsWith("en-US"));
+    if(us.length) list=us;
+  }
+
+  return (
+    list.find(v=>v.name.includes("Neural2"))||
+    list.find(v=>v.name.includes("WaveNet"))||
+    list.find(v=>v.name.includes("Standard"))||
+    {name:"en-US-Standard-A"}
+  ).name;
+}
+async function tts(text,lang,gender){
+  const synth=async name=>{
+    const lc=name.split("-",2).join("-");
+    const r=await fetch(
+      `https://texttospeech.googleapis.com/v1/text:synthesize?key=${GOOGLE_TTS_KEY}`,
+      {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          input:{text},
+          voice:{languageCode:lc,name},
+          audioConfig:{audioEncoding:"MP3",speakingRate:0.9}
+        })
+      }
+    ).then(r=>r.json());
+    return r.audioContent?Buffer.from(r.audioContent,"base64"):null;
+  };
+  let buf=await synth(await pickVoice(lang,gender)); if(buf)return buf;
+  buf=await synth(lang);               if(buf)return buf;
+  buf=await synth("en-US-Standard-A"); if(buf)return buf;
+  throw new Error("TTS failed");
+}
+
+/* Storage bucket (self-healing) */
+async function ensureBucket(){
+  const { error } = await supabase.storage.createBucket("tts-voices",{ public:true });
+  if(error && error.code!=="PGRST116") throw error;
+}
+async function uploadAudio(buffer){
+  const fn=`tts_${uuid()}.mp3`;
+  let up=await supabase.storage.from("tts-voices")
+    .upload(fn,buffer,{contentType:"audio/mpeg",upsert:true});
+
+  if(up.error && /Bucket not found/i.test(up.error.message)){
+    console.warn("⚠️ Bucket missing → creating …");
+    await ensureBucket();
+    up=await supabase.storage.from("tts-voices")
+      .upload(fn,buffer,{contentType:"audio/mpeg",upsert:true});
+  }
+  if(up.error) throw up.error;
+  return `${SUPABASE_URL}/storage/v1/object/public/tts-voices/${fn}`;
+}
+
+/* Stripe checkout link */
+async function ensureCustomer(u){
+  if(u.stripe_cust_id) return u.stripe_cust_id;
+  const c=await stripe.customers.create({description:`TuCan ${u.phone_number}`});
+  await supabase.from("users").update({stripe_cust_id:c.id}).eq("id",u.id);
+  return c.id;
+}
+async function checkoutUrl(u,tier){
+  const price=tier==="monthly"?PRICE_MONTHLY:tier==="annual"?PRICE_ANNUAL:PRICE_LIFE;
+  const s=await stripe.checkout.sessions.create({
+    mode:tier==="life"?"payment":"subscription",
+    customer:await ensureCustomer(u),
+    line_items:[{price,quantity:1}],
+    success_url:"https://tucanchat.io/success",
+    cancel_url:"https://tucanchat.io/cancel",
+    metadata:{tier}
+  });
+  return s.url;
+}
+
+/* tiny Twilio send */
+async function sendMessage(to,body="",mediaUrl){
+  const p={ from:WHATSAPP_FROM, to };
+  if(mediaUrl) p.mediaUrl=[mediaUrl];
+  else         p.body=body;
+  await twilioClient.messages.create(p);
+}
+
+/* log */
+const logRow=d=>supabase.from("translations").insert({ ...d,id:uuid() });
+
 /* ====================================================================
    3️⃣  Main handler
 ==================================================================== */
@@ -162,23 +304,15 @@ async function handleIncoming(from,text,num,mediaUrl){
   if(!user){
     ({ data:user } = await supabase.from("users")
       .upsert(
-        { phone_number:from,
-          language_step:"welcome",           // 👈 NEW start state
-          plan:"FREE",
-          free_used:0
-        },
+        { phone_number:from,language_step:"welcome",plan:"FREE",free_used:0 },
         { onConflict:["phone_number"] }
       ).select("*").single());
   }
   const isFree = !user.plan || user.plan==="FREE";
 
-  /* ───────────────────────────────
-     WELCOME  – pick own language
-  ─────────────────────────────── */
+  /* ── first-run language picker ── */
   if(user.language_step==="welcome"){
     const choice = pickLang(text);
-
-    /* if no valid digit/keyword → show menu (again) */
     if(!choice){
       await sendMessage(from,
         menuMsg("👋 Welcome to TuCanChat!  Please choose your language:")
@@ -186,9 +320,8 @@ async function handleIncoming(from,text,num,mediaUrl){
       return;
     }
 
-    /* save as TARGET language & step forward */
     await supabase.from("users")
-      .update({ target_lang: choice.code, language_step:"source" })
+      .update({ target_lang:choice.code, language_step:"source" })
       .eq("phone_number",from);
 
     const blurb = choice.code==="en"
@@ -196,18 +329,12 @@ async function handleIncoming(from,text,num,mediaUrl){
         : await translate(HOW_IT_WORKS_EN, choice.code);
 
     await sendMessage(from, blurb);
-
-    await sendMessage(
-      from,
+    await sendMessage(from,
       menuMsg("🗣 What language are the messages you RECEIVE in?")
     );
     return;
   }
 
-  /* =================================================================
-     Rest of the ORIGINAL wizard / pay-wall / translation logic
-     (everything below is **identical** to the working file you sent)
-  ================================================================= */
   /* pay-wall replies */
   if(/^[1-3]$/.test(text) && isFree && user.free_used>=5){
     const tier=text==="1"?"monthly":text==="2"?"annual":"life";
@@ -271,7 +398,7 @@ async function handleIncoming(from,text,num,mediaUrl){
     await sendMessage(from,"⚠️ Setup incomplete. Text *reset* to start over.");return;
   }
 
-  /* transcribe / detect / translate — unchanged */
+  /* ── transcribe / translate ── */
   let original="",detected="";
   if(num>0&&mediaUrl){
     const auth="Basic "+Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
@@ -318,7 +445,7 @@ async function handleIncoming(from,text,num,mediaUrl){
   try{
     const mp3=await tts(translated,dest,user.voice_gender);
     const pub=await uploadAudio(mp3);
-    await sendMessage(from,"",pub);            // 3 (audio only)
+    await sendMessage(from,"",pub);            // 3
   }catch(e){
     console.error("TTS/upload error:",e.message);
   }
