@@ -412,12 +412,12 @@ const logRow=d=>supabase.from("translations").insert({ ...d,id:uuid() });
 async function handleIncoming(from, text, num, mediaUrl) {
   if (!from) return;
 
-  /* fetch or create user row */
+  /* fetch or create user row (switch .single → .maybeSingle) */
   let { data: user } = await supabase
     .from("users")
     .select("*")
     .eq("phone_number", from)
-    .single();
+    .maybeSingle();
 
   if (!user) {
     ({ data: user } = await supabase
@@ -433,7 +433,17 @@ async function handleIncoming(from, text, num, mediaUrl) {
         { onConflict: ["phone_number"] }
       )
       .select("*")
-      .single());
+      .maybeSingle());
+  }
+
+  /* fail-safe: if row still null, bail gracefully */
+  if (!user) {
+    console.error("❌ couldn’t create user row for", from);
+    await sendMessage(
+      from,
+      "⚠️ Internal setup error – please type “reset” and try again."
+    );
+    return;
   }
 
   /* helper to fetch right strings */
@@ -469,7 +479,7 @@ async function handleIncoming(from, text, num, mediaUrl) {
   }
 
   const isFree = !user.plan || user.plan === "FREE";
-
+   
   /* pay-wall button replies */
   if (/^[1-3]$/.test(text) && isFree && user.free_used >= 5) {
     const tier = text === "1" ? "monthly" : text === "2" ? "annual" : "life";
