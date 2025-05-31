@@ -343,18 +343,16 @@ async function handleIncoming(from,text,num,mediaUrl){
 
   /* ───────── wizard steps ───────── */
 
-  /* 1️⃣ welcome → choose target + send description */
+  /* 1️⃣ welcome */
   if(user.language_step==="welcome"){
-    const c=pickLang(text);
+    const c = pickLang(text);
     if(c){
       await supabase.from("users")
-        .update({target_lang:c.code,language_step:"source"})
+        .update({ target_lang:c.code, language_step:"source" })
         .eq("phone_number",from);
 
-      /* translate description if needed */
-      const descr = c.code==="en"
-        ? BASE_DESCRIPTION
-        : await translate(BASE_DESCRIPTION,c.code);
+      const descr = c.code==="en" ? BASE_DESCRIPTION
+                     : await translate(BASE_DESCRIPTION,c.code);
 
       await sendMessage(from,descr);
       await sendMessage(
@@ -362,7 +360,8 @@ async function handleIncoming(from,text,num,mediaUrl){
         menuMsg("🌍 What language are the messages you receive in?")
       );
     }else{
-      await sendMessage(from,menuMsg("❌ Reply 1-5.\nPlease choose your language:"));
+      /* change: no ❌, always show welcome menu */
+      await sendMessage(from,menuMsg("👋 Welcome to TuCanChat!  Please choose your language:"));
     }
     return;
   }
