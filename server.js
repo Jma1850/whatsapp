@@ -300,11 +300,23 @@ async function handleIncoming(from,text,num,mediaUrl){
     .single();
 
   if(!user){
-    ({ data:user } = await supabase.from("users")
+    ({ data: user } = await supabase.from("users")
       .upsert(
-        { phone_number:from,language_step:"source",plan:"FREE",free_used:0 },
-        { onConflict:["phone_number"] }
+        { phone_number: from, language_step: "source", plan: "FREE", free_used: 0 },
+        { onConflict: ["phone_number"] }
       ).select("*").single());
+
+    /* ✨ FIRST-TIME WELCOME */
+    await sendMessage(
+      from,
+      "Welcome to TuCanChat!\n" +
+      "1) I speak English\n" +
+      "2) Spanish\n" +
+      "3) French\n" +
+      "4) Portuguese\n" +
+      "5) German"
+    );
+    return;           // stop here—wait for their language pick
   }
   const isFree=!user.plan||user.plan==="FREE";
 
