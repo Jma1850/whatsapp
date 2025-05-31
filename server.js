@@ -163,10 +163,42 @@ const pickLang = txt=>{
 };
 
 /* =====================================================================
-   1.  Stripe webhook  (unchanged logic – removed here for brevity)
+   1.  Stripe webhook 
 ===================================================================== */
-app.post("/stripe-webhook",
-  bodyParser.raw({type:"application/json"}), async(req,res)=>{ /* …same as before… */});
+
+app.post(
+  "/stripe-webhook",
+  bodyParser.raw({ type:"application/json" }),
+  async (req,res) => {
+    let event;
+    try{
+      event = stripe.webhooks.constructEvent(
+        req.body, req.headers["stripe-signature"], STRIPE_WEBHOOK_SECRET
+      );
+    }catch(e){ console.error("stripe sig err",e.message); return res.sendStatus(400); }
+
+    if(event.type==="checkout.session.completed"){
+      const s=event.data.object;
+      const plan = s.metadata.tier==="monthly"?"MONTHLY"
+                 :s.metadata.tier==="annual" ?"ANNUAL":"LIFETIME";
+
+      const upd = await supabase.from("users")
+        .update({ plan, free_used:0, stripe_sub_id:s.subscription })
+        .eq("stripe_cust_id", s.customer);
+
+      if(upd.data?.length===0){
+        await supabase.from("users").update({
+          plan, free_used:0, stripe_cust_id:s.customer, stripe_sub_id:s.subscription
+        }).eq("id", s.metadata.uid);
+      }
+    }
+    if(event.type==="customer.subscription.deleted"){
+      const sub=event.data.object;
+      await supabase.from("users").update({plan:"FREE"}).eq("stripe_sub_id",sub.id);
+    }
+    res.json({received:true});
+  }
+);
 
 /* =====================================================================
    2.  Helpers:  toWav, whisper, detectLang, translate, TTS, uploadAudio,
