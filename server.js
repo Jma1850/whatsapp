@@ -442,8 +442,6 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
     }
     return;
   }
-return;
-  }
   if(!user.source_lang||!user.target_lang||!user.voice_gender){
     await sendMessage(from,"⚠️ Setup incomplete. Text *reset* to start over.");return;
   }
