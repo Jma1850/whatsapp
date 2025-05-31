@@ -412,31 +412,32 @@ const logRow=d=>supabase.from("translations").insert({ ...d,id:uuid() });
 async function handleIncoming(from, text, num, mediaUrl) {
   if (!from) return;
 
-  /* fetch or create user row (switch .single → .maybeSingle) */
-  let { data: user } = await supabase
+  /* ── 1. fetch existing user row ─────────────────────────────── */
+  let { data: user, error: selErr } = await supabase
     .from("users")
     .select("*")
     .eq("phone_number", from)
     .maybeSingle();
 
-  if (!user) {
-    ({ data: user } = await supabase
+  /* ── 2. if none, insert a minimal row and grab it right back ── */
+  if (!user && !selErr) {
+    const { data: created, error: insErr } = await supabase
       .from("users")
-      .upsert(
-        {
-          phone_number: from,
-          ui_lang: null,          // not chosen yet
-          language_step: "choose_ui",
-          plan: "FREE",
-          free_used: 0,
-        },
-        { onConflict: ["phone_number"] }
-      )
+      .insert({ phone_number: from })             // defaults fill the rest
       .select("*")
-      .maybeSingle());
+      .single();                                  // always returns the row
+
+    if (created) user = created;
+    else if (insErr && insErr.code === "23505") { // race condition safety
+      ({ data: user } = await supabase
+        .from("users")
+        .select("*")
+        .eq("phone_number", from)
+        .single());
+    }
   }
 
-  /* fail-safe: if row still null, bail gracefully */
+  /* ── 3. absolute guard (should never hit now) ───────────────── */
   if (!user) {
     console.error("❌ couldn’t create user row for", from);
     await sendMessage(
@@ -446,7 +447,7 @@ async function handleIncoming(from, text, num, mediaUrl) {
     return;
   }
 
-  /* helper to fetch right strings */
+  /* helper for text snippets */
   const L = (key) => i18n[user.ui_lang || "en"][key];
 
   /* ————————————————— 0. first-ever message → welcome menu ——————— */
