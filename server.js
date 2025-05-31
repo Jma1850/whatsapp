@@ -347,10 +347,15 @@ async function handleIncoming(from,text,num,mediaUrl){
   /* ───────────────────────────
      WELCOME → choose own lang
   ─────────────────────────── */
-  if(user.language_step==="welcome"){
-    const c=pickLang(text);
+   if(user.language_step==="welcome"){
+    const c = pickLang(text);
+
+    /* NEW ⇩  — greet first, only error if they ignore menu AFTER seeing it */
     if(!c){
-      await sendMessage(from,menuMsg("❌ Reply 1-5.\nPlease choose your language:"));
+      await sendMessage(
+        from,
+        menuMsg("👋 Welcome to TuCanChat!  Please choose your language:")
+      );
       return;
     }
     // save chosen language as target_lang
