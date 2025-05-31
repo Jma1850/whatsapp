@@ -314,7 +314,7 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
   if (!from) return;
   const lower = text.trim().toLowerCase();
 
-  /* ─── 0. FETCH (OR CREATE) USER ─────────────────────────── */
+  /* 0. fetch (or create) user */
   let { data: user } = await supabase
     .from("users")
     .select("*")
@@ -337,7 +337,7 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
 
   const isFree = !user.plan || user.plan === "FREE";
 
-  /* ─── 1. PAY-WALL BUTTONS ──────────────────────────────── */
+  /* 1. pay-wall button replies */
   if (/^[1-3]$/.test(lower) && isFree && user.free_used >= 5) {
     const tier = lower === "1" ? "monthly" : lower === "2" ? "annual" : "life";
     try {
@@ -350,55 +350,51 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
     return;
   }
 
-  /* ─── 2. RESET COMMAND ─────────────────────────────────── */
+  /* 2. reset */
   if (/^(reset|change language)$/i.test(lower)) {
-    await supabase
-      .from("users")
-      .update({
-        language_step: "target",
-        source_lang: null,
-        target_lang: null,
-        voice_gender: null,
-      })
-      .eq("phone_number", from);
+    await supabase.from("users").update({
+      language_step: "target",
+      source_lang: null,
+      target_lang: null,
+      voice_gender: null,
+    }).eq("phone_number", from);
 
     await sendMessage(from, WELCOME_MSG);
     return;
   }
 
-  /* ─── 3. FREE-TIER PAY-WALL GATE ───────────────────────── */
+  /* 3. free-tier gate */
   if (isFree && user.free_used >= 5) {
     await sendMessage(from, paywallMsg);
     return;
   }
 
-  /* ─── 4. ONBOARDING WIZARD ─────────────────────────────── */
+  /* 4. onboarding wizard ----------------------------------- */
 
-  /* 4a. PICK THE BOT’S REPLY LANGUAGE (target_lang) */
+  /* 4a. pick TARGET language (bot’s reply language) */
   if (user.language_step === "target") {
     const choice = pickLang(text);
     if (choice) {
-      await supabase
-        .from("users")
+      await supabase.from("users")
         .update({ target_lang: choice.code, language_step: "source" })
         .eq("phone_number", from);
 
-      /* build one combined message → HOW-TEXT first, then prompt/menu */
-      const how     = await translate(HOW_TEXT, choice.code);
-      const askSrc  = await translate(
+      /* two separate messages */
+      const how    = await translate(HOW_TEXT, choice.code);
+      await sendMessage(from, how);                                // 1️⃣ first message
+
+      const askSrc = await translate(
         "What language do you RECEIVE messages in? Reply 1-5.",
         choice.code
       );
-      const comboMsg = `${how}\n\n${menuMsg(askSrc)}`;
-
-      await sendMessage(from, comboMsg);
+      await sendMessage(from, menuMsg(askSrc));                    // 2️⃣ second message
     } else {
       await sendMessage(from, menuMsg("❌ Reply 1-5.\nLanguages:"));
     }
     return;
   }
 
-  /* 4b. PICK THE USER’S SENDING LANGUAGE (source_lang) */
+  /* 4b. pick SOURCE language (user’s sending language) */
   if (user.language_step === "source") {
     const choice = pickLang(text);
     if (choice) {
@@ -406,8 +402,7 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
         await sendMessage(from, menuMsg("⚠️ Source must differ.\nLanguages:"));
         return;
       }
-      await supabase
-        .from("users")
+      await supabase.from("users")
         .update({ source_lang: choice.code, language_step: "gender" })
         .eq("phone_number", from);
 
@@ -422,15 +417,14 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
     return;
   }
 
-  /* 4c. PICK VOICE GENDER */
+  /* 4c. pick voice gender */
   if (user.language_step === "gender") {
     let g = null;
     if (/^1$/.test(lower) || /male/i.test(lower))   g = "MALE";
     if (/^2$/.test(lower) || /female/i.test(lower)) g = "FEMALE";
 
     if (g) {
-      await supabase
-        .from("users")
+      await supabase.from("users")
         .update({ voice_gender: g, language_step: "ready" })
         .eq("phone_number", from);
 
@@ -447,6 +441,8 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
       await sendMessage(from, retry);
     }
     return;
+  }
+return;
   }
   if(!user.source_lang||!user.target_lang||!user.voice_gender){
     await sendMessage(from,"⚠️ Setup incomplete. Text *reset* to start over.");return;
