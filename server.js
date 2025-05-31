@@ -134,12 +134,16 @@ menuMsg("");
 
 const HOW_MSG =
 `📌 How TuCanChat works
-• Send any voice note or text.
+• Speak or forward any voice note or text to TucanChat, or write/speak in the chat.
+• It also works in reverse, so you can speak or type in your language, and receive in the language you want to send back to someone.
 • I instantly deliver:
  1. Heard: your exact words
  2. Translation
  3. Audio reply in your language
-• Type “reset” anytime to switch languages.`;
+• Type “reset” anytime to switch languages.
+• Only Audio messages receive and audio reply.
+When it shines: quick travel chats, decoding a doctor’s message, 
+sending voice messages or text back in the other persons language, or brushing up on a new language—without ever leaving WhatsApp.`;
 
 const paywallMsg =
 `⚠️ You’ve used your 5 free translations. For unlimited access choose:
