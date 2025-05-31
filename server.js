@@ -314,9 +314,7 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
   if (!from) return;
   const lower = text.trim().toLowerCase();
 
-  /*────────────────────────────
-    0.  FETCH (OR INSERT) USER
-  ────────────────────────────*/
+  /* ─── 0. FETCH (OR CREATE) USER ─────────────────────────── */
   let { data: user } = await supabase
     .from("users")
     .select("*")
@@ -324,7 +322,6 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
     .single();
 
   if (!user) {
-    /* first-ever message from this phone number */
     ({ data: user } = await supabase
       .from("users")
       .upsert(
@@ -334,15 +331,13 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
       .select("*")
       .single());
 
-    await sendMessage(from, WELCOME_MSG);   // multilingual menu (always English)
+    await sendMessage(from, WELCOME_MSG);
     return;
   }
 
   const isFree = !user.plan || user.plan === "FREE";
 
-  /*────────────────────────────
-    1.  PAY-WALL BUTTON REPLIES
-  ────────────────────────────*/
+  /* ─── 1. PAY-WALL BUTTONS ──────────────────────────────── */
   if (/^[1-3]$/.test(lower) && isFree && user.free_used >= 5) {
     const tier = lower === "1" ? "monthly" : lower === "2" ? "annual" : "life";
     try {
@@ -355,9 +350,7 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
     return;
   }
 
-  /*────────────────────────────
-    2.  RESET COMMAND
-  ────────────────────────────*/
+  /* ─── 2. RESET COMMAND ─────────────────────────────────── */
   if (/^(reset|change language)$/i.test(lower)) {
     await supabase
       .from("users")
@@ -373,45 +366,39 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
     return;
   }
 
-  /*────────────────────────────
-    3.  FREE-TIER PAY-WALL GATE
-  ────────────────────────────*/
+  /* ─── 3. FREE-TIER PAY-WALL GATE ───────────────────────── */
   if (isFree && user.free_used >= 5) {
     await sendMessage(from, paywallMsg);
     return;
   }
 
-  /*────────────────────────────
-    4.  ONBOARDING WIZARD
-  ────────────────────────────*/
+  /* ─── 4. ONBOARDING WIZARD ─────────────────────────────── */
 
-  /* 4a.  STEP: PICK TARGET LANG (bot’s reply language) */
+  /* 4a. PICK THE BOT’S REPLY LANGUAGE (target_lang) */
   if (user.language_step === "target") {
     const choice = pickLang(text);
     if (choice) {
-      /* save target, move to next step */
       await supabase
         .from("users")
         .update({ target_lang: choice.code, language_step: "source" })
         .eq("phone_number", from);
 
-      /* send “How TuCanChat works” in their language */
-      const how = await translate(HOW_TEXT, choice.code);
-      await sendMessage(from, how);
-
-      /* ask which language THEY will send (source) */
-      const askSrc = await translate(
+      /* build one combined message → HOW-TEXT first, then prompt/menu */
+      const how     = await translate(HOW_TEXT, choice.code);
+      const askSrc  = await translate(
         "What language do you RECEIVE messages in? Reply 1-5.",
         choice.code
       );
-      await sendMessage(from, menuMsg(askSrc));
+      const comboMsg = `${how}\n\n${menuMsg(askSrc)}`;
+
+      await sendMessage(from, comboMsg);
     } else {
       await sendMessage(from, menuMsg("❌ Reply 1-5.\nLanguages:"));
     }
     return;
   }
 
-  /* 4b.  STEP: PICK SOURCE LANG (user’s sending language) */
+  /* 4b. PICK THE USER’S SENDING LANGUAGE (source_lang) */
   if (user.language_step === "source") {
     const choice = pickLang(text);
     if (choice) {
@@ -435,10 +422,10 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
     return;
   }
 
-  /* 4c.  STEP: PICK VOICE GENDER */
+  /* 4c. PICK VOICE GENDER */
   if (user.language_step === "gender") {
     let g = null;
-    if (/^1$/.test(lower) || /male/i.test(lower)) g = "MALE";
+    if (/^1$/.test(lower) || /male/i.test(lower))   g = "MALE";
     if (/^2$/.test(lower) || /female/i.test(lower)) g = "FEMALE";
 
     if (g) {
@@ -461,8 +448,6 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
     }
     return;
   }
-
-
   if(!user.source_lang||!user.target_lang||!user.voice_gender){
     await sendMessage(from,"⚠️ Setup incomplete. Text *reset* to start over.");return;
   }
