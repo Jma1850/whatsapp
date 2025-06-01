@@ -136,7 +136,7 @@ one of the subscription options below:
 
 /* ────────── new constants ────────── */
 const WELCOME_MSG =
-`Welcome to TuCanChat
+`Welcome to TuCanChat🦜
 1) I speak English – type 1
 2) Hablo Español – escribe 2
 3) Je parle français – tapez 3
@@ -144,15 +144,17 @@ const WELCOME_MSG =
 5) Ich spreche Deutsch – tippe 5`;
 
 const HOW_TEXT =                  // kept in English; we’ll auto-translate later
-`📌 How TuCanChat works
-• Send any voice note or text.
+`📌 How TuCanChat works🦜
+Recieve a voice note or text you dont 100% understand?
+• Send it to me
 • I instantly deliver:
   1. Heard: your exact words
   2. Translation
   3. Audio reply in your language
+  4. Speak reply in your own language; I’ll translate and creat a text and voice message you can forward to them
 • Type “reset” anytime to switch languages.
 
-When it shines: quick travel chats, decoding a doctor’s or lawyer’s message, serving global customers, or brushing up on a new language—without ever leaving WhatsApp.`;
+All without leaving WhatsApp.`;
 /* ─────────────────────────────────── */
 
 /* audio helpers */
