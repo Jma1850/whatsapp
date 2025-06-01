@@ -401,7 +401,10 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
 
   /* 3. free-tier gate */
   if (isFree && user.free_used >= 5) {
-    await sendMessage(from, paywallMsguser.ui_lang || user.source_lang || "en");
+    await sendMessage(
+    from,
+    paywallMsg[user.ui_lang || user.source_lang || "en"]
+  );
 ;
     return;
   }
