@@ -196,7 +196,7 @@ async function translate(text,target){
          lowercase English word "reset".
          Translate everything else to ${target}. Return ONLY the translation.`},
        { role: "user",
-+        content: `Translate this into ${target}:\n\n${text}` }
+        content: `Translate this into ${target}:\n\n${text}` }
     ],
     max_tokens:400
   });
