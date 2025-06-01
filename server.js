@@ -403,7 +403,8 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
   if (isFree && user.free_used >= 5) {
     await sendMessage(
     from,
-    paywallMsg[user.ui_lang || user.source_lang || "en"]
+    paywallMsg[(user.source_lang || "en").toLowerCase()] || paywallMsg.en
+ );
   );
 ;
     return;
