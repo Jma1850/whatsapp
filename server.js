@@ -54,13 +54,49 @@ const app = express();
 /* ====================================================================
    1️⃣  STRIPE WEBHOOK  (raw body)
 ==================================================================== */
+async function ensureCustomer(user) {
+  /* returns an existing Stripe customer-id or creates one */
+  if (user.stripe_cust_id) return user.stripe_cust_id;
+
+  const c = await stripe.customers.create({
+    email: user.email || undefined,
+    name : user.full_name || user.phone_number
+  });
+
+  await supabase
+    .from("users")
+    .update({ stripe_cust_id: c.id })
+    .eq("id", user.id);
+
+  return c.id;
+}
+
+async function checkoutUrl(user, tier /* 'monthly' | 'annual' | 'life' */) {
+  const price =
+    tier === "monthly" ? PRICE_MONTHLY :
+    tier === "annual"  ? PRICE_ANNUAL  :
+    PRICE_LIFE;                           // life-time one-off
+
+  const session = await stripe.checkout.sessions.create({
+    mode: tier === "life" ? "payment" : "subscription",
+    customer: await ensureCustomer(user),
+    line_items: [{ price, quantity: 1 }],
+    success_url: "https://tucanchat.io/success",
+    cancel_url : "https://tucanchat.io/cancel",
+    metadata   : { tier, uid: user.id }   // ← UID added for webhook
+  });
+
+  return session.url;
+}
+
+/* =====================================================================
+   Stripe webhook – upgrades & downgrades
+===================================================================== */
 app.post(
   "/stripe-webhook",
   bodyParser.raw({ type: "application/json" }),
   async (req, res) => {
     let event;
-
-    /* — verify the Stripe signature — */
     try {
       event = stripe.webhooks.constructEvent(
         req.body,
@@ -72,32 +108,27 @@ app.post(
       return res.sendStatus(400);
     }
 
-    /* ──────────────────────────────────────────────────────────────
-       A. Checkout completed – upgrade user’s plan
-    ────────────────────────────────────────────────────────────── */
+    /* ── A) Checkout finished – set user plan ─────────────────── */
     if (event.type === "checkout.session.completed") {
       const s = event.data.object;
-
-      /* 1. figure out which plan they bought */
       const plan =
-        s.metadata.tier === "monthly"
-          ? "MONTHLY"
-          : s.metadata.tier === "annual"
-          ? "ANNUAL"
-          : "LIFETIME"; // tier === "life"
+        s.metadata.tier === "monthly" ? "MONTHLY" :
+        s.metadata.tier === "annual"  ? "ANNUAL"  :
+        "LIFETIME";
 
-      /* 2. first try by Stripe customer-ID (most common) */
+      /* 1️⃣ update by uid first (always present now) */
       const upd1 = await supabase
         .from("users")
         .update({
           plan,
-          free_used: 0,             // reset free counter
-          stripe_sub_id: s.subscription
+          free_used: 0,
+          stripe_cust_id: s.customer,
+          stripe_sub_id : s.subscription
         })
-        .eq("stripe_cust_id", s.customer)
-        .select();                  // ← ensures we get updated rows back
+        .eq("id", s.metadata.uid)
+        .select();      // returns updated rows
 
-      /* 3. if that matched nothing, fall back to metadata.uid */
+      /* 2️⃣ fallback: match by customer-id if uid lookup missed */
       if (!upd1.data || upd1.data.length === 0) {
         await supabase
           .from("users")
@@ -105,25 +136,21 @@ app.post(
             plan,
             free_used: 0,
             stripe_cust_id: s.customer,
-            stripe_sub_id: s.subscription
+            stripe_sub_id : s.subscription
           })
-          .eq("id", s.metadata.uid);   // uid was added when creating the checkout
+          .eq("stripe_cust_id", s.customer);
       }
     }
 
-    /* ──────────────────────────────────────────────────────────────
-       B. Subscription cancelled – downgrade to FREE
-    ────────────────────────────────────────────────────────────── */
+    /* ── B) Subscription cancelled – downgrade to FREE ─────────── */
     if (event.type === "customer.subscription.deleted") {
       const sub = event.data.object;
-
       await supabase
         .from("users")
         .update({ plan: "FREE" })
         .eq("stripe_sub_id", sub.id);
     }
 
-    /* — tell Stripe we processed the hook — */
     res.json({ received: true });
   }
 );
