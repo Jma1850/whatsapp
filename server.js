@@ -177,11 +177,11 @@ const HOW_TEXT =                  // kept in English; we’ll auto-translate lat
 `📌 How TuCanChat works🦜
 Recieve a voice note or text you dont 100% understand?
 • Send it to me
-• I instantly deliver:
-  1. Heard: your exact words
-  2. Translation
-  3. Audio reply in your language
-  4. Speak reply in your own language; I’ll translate and creat a text and voice message you can forward to them
+• I instantly:
+  1. Transcribe the message
+  2. Translate
+  3. Provide an audio reply in your language
+  4. Speak the reply in your own language; I’ll translate and creat a text and voice message you can forward to them
 • Type “reset” anytime to switch languages.
 
 All without leaving WhatsApp.`;
