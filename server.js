@@ -402,7 +402,7 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
   const isFree = !user.plan || user.plan === "FREE";
 
   /* 1. pay-wall button replies */
-  if (/^[1-3]$/.test(lower) && isFree && user.free_used >= 5) {
+  if (/^[1-3]$/.test(lower) && isFree && user.free_used >= 10) {
     const tier = lower === "1" ? "monthly" : lower === "2" ? "annual" : "life";
     try {
       const link = await checkoutUrl(user, tier);
