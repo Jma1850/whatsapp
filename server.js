@@ -190,8 +190,11 @@ async function translate(text,target){
   const r=await openai.chat.completions.create({
     model:"gpt-4o-mini",
     messages:[
-      {role:"system",content:`Translate to ${target}. Return ONLY the translation.`},
-      {role:"user",  content:text}
+      {role:"system",content:
+        `You are a professional translator.
+         Never translate the literal keyword "reset"; always leave it as the
+         lowercase English word "reset".
+         Translate everything else to ${target}. Return ONLY the translation.`},
     ],
     max_tokens:400
   });
