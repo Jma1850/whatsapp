@@ -51,9 +51,55 @@ const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 /* express */
 const app = express();
 
-/* ====================================================================
-   1️⃣  STRIPE WEBHOOK  (raw body)
-==================================================================== */
+/* =====================================================================
+   Stripe helpers
+===================================================================== */
+
+/* Make sure every user row has a stripe_cust_id before checkout */
+async function ensureCustomer(user) {
+  if (user.stripe_cust_id) return user.stripe_cust_id;
+
+  const customer = await stripe.customers.create({
+    description: `TuCanChat — ${user.phone_number}`,
+    email: user.email || undefined,
+    name : user.full_name || user.phone_number
+  });
+
+  /* upsert + select → guarantees the write commits before we return */
+  await supabase
+    .from("users")
+    .upsert(
+      { id: user.id, stripe_cust_id: customer.id },
+      { onConflict: ["id"] }
+    )
+    .select();                        // waits for DB commit
+
+  return customer.id;
+}
+
+/* Build a hosted-checkout link (monthly / annual / life) */
+async function checkoutUrl(user, tier /* 'monthly' | 'annual' | 'life' */) {
+  const price =
+    tier === "monthly" ? PRICE_MONTHLY :
+    tier === "annual"  ? PRICE_ANNUAL  :
+    PRICE_LIFE;                       // lifetime one-off
+
+  const custId  = await ensureCustomer(user);  // row now has stripe_cust_id
+  const session = await stripe.checkout.sessions.create({
+    mode: tier === "life" ? "payment" : "subscription",
+    customer: custId,
+    line_items: [{ price, quantity: 1 }],
+    success_url: "https://tucanchat.io/success",
+    cancel_url : "https://tucanchat.io/cancel",
+    metadata   : { tier }            // uid no longer required
+  });
+
+  return session.url;
+}
+
+/* =====================================================================
+   Stripe webhook – upgrade / downgrade plans
+===================================================================== */
 app.post(
   "/stripe-webhook",
   bodyParser.raw({ type: "application/json" }),
@@ -65,12 +111,12 @@ app.post(
         req.headers["stripe-signature"],
         STRIPE_WEBHOOK_SECRET
       );
-    } catch (e) {
-      console.error("stripe sig err", e.message);
+    } catch (err) {
+      console.error("⚠️  Stripe signature check failed:", err.message);
       return res.sendStatus(400);
     }
 
-    /* ── A) checkout finished – set plan & reset counter ─────────── */
+    /* ── A) Checkout completed → set plan & reset counter ───────── */
     if (event.type === "checkout.session.completed") {
       const s = event.data.object;
       const plan =
@@ -78,32 +124,17 @@ app.post(
         s.metadata.tier === "annual"  ? "ANNUAL"  :
         "LIFETIME";
 
-      /* ① try by Stripe customer-id */
-      const upd1 = await supabase
+      await supabase
         .from("users")
         .update({
           plan,
           free_used: 0,
           stripe_sub_id: s.subscription
         })
-        .eq("stripe_cust_id", s.customer)
-        .select();                       // ← returns updated rows
-
-      /* ② if nothing matched, fall back to uid in metadata */
-      if (!upd1.data || upd1.data.length === 0) {
-        await supabase
-          .from("users")
-          .update({
-            plan,
-            free_used: 0,
-            stripe_cust_id: s.customer,
-            stripe_sub_id:  s.subscription
-          })
-          .eq("id", s.metadata.uid);     // ← uid added when link was built
-      }
+        .eq("stripe_cust_id", s.customer);  // always matches now
     }
 
-    /* ── B) subscription cancelled – back to FREE ───────────────── */
+    /* ── B) Subscription cancelled → revert to FREE ─────────────── */
     if (event.type === "customer.subscription.deleted") {
       const sub = event.data.object;
       await supabase
