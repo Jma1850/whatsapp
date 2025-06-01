@@ -57,7 +57,7 @@ const app = express();
 app.post(
   "/stripe-webhook",
   bodyParser.raw({ type: "application/json" }),
-  stripeWebhookHandler 
+  stripeWebhookHandler )
 /* ---------------- 1. ensureCustomer: synchronous UPSERT ------------- */
 async function ensureCustomer(user) {
   if (user.stripe_cust_id) return user.stripe_cust_id;
