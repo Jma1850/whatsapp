@@ -359,26 +359,6 @@ async function uploadAudio(buffer){
   return `${SUPABASE_URL}/storage/v1/object/public/tts-voices/${fn}`;
 }
 
-/* Stripe checkout link */
-async function ensureCustomer(u){
-  if(u.stripe_cust_id) return u.stripe_cust_id;
-  const c=await stripe.customers.create({description:`TuCan ${u.phone_number}`});
-  await supabase.from("users").update({stripe_cust_id:c.id}).eq("id",u.id);
-  return c.id;
-}
-async function checkoutUrl(u,tier){
-  const price=tier==="monthly"?PRICE_MONTHLY:tier==="annual"?PRICE_ANNUAL:PRICE_LIFE;
-  const s=await stripe.checkout.sessions.create({
-    mode:tier==="life"?"payment":"subscription",
-    customer:await ensureCustomer(u),
-    line_items:[{price,quantity:1}],
-    success_url:"https://tucanchat.io/success",
-    cancel_url:"https://tucanchat.io/cancel",
-    metadata:{tier}
-  });
-  return s.url;
-}
-
 /* skinny Twilio send */
 async function sendMessage(to,body="",mediaUrl){
   const p={ from:WHATSAPP_FROM, to };
