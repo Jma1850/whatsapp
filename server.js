@@ -404,8 +404,7 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
     await sendMessage(
     from,
     paywallMsg[(user.source_lang || "en").toLowerCase()] || paywallMsg.en
- );
-  );
+    );
 ;
     return;
   }
