@@ -74,7 +74,7 @@ app.post(
       const s    = event.data.object;
       const plan = s.metadata.tier === "monthly" ? "MONTHLY"
                  : s.metadata.tier === "annual"  ? "ANNUAL"
-                 : s.metadata.tier === "lifetime" ? "LIFETIME";
+                 : "LIFETIME";
 
       /* ① by stripe_cust_id */
       const upd1 = await supabase
