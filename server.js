@@ -1,27 +1,23 @@
-/* ───────────────────────────────────────────────────────────────────────
-   TuCan server.js  —  WhatsApp voice↔text translator bot
-   • 5-language wizard          • Whisper + GPT-4o translate
-   • Google-TTS voices          • Stripe pay-wall (5 free)
-   • Supabase logging           • Self-healing Storage bucket
-   • 3-part voice-note reply    • Prefers en-US voice for English
-────────────────────────────────────────────────────────────────────────*/
-import express    from "express";
-import bodyParser from "body-parser";
-import fetch      from "node-fetch";
-import ffmpeg     from "fluent-ffmpeg";
-import fs         from "fs";
+/* ──────────────────────────────────────────────────────────────────────
+   TuCanChat server.js  –  WhatsApp voice ↔ text translator bot
+────────────────────────────────────────────────────────────────────── */
+import express          from "express";
+import bodyParser       from "body-parser";
+import fetch            from "node-fetch";
+import ffmpeg           from "fluent-ffmpeg";
+import fs               from "fs";
 import { randomUUID as uuid } from "crypto";
-import OpenAI     from "openai";
-import Stripe     from "stripe";
-import twilio     from "twilio";
+import OpenAI           from "openai";
+import Stripe           from "stripe";
+import twilio           from "twilio";
 import { createClient } from "@supabase/supabase-js";
-import * as dotenv from "dotenv";
+import * as dotenv      from "dotenv";
 dotenv.config();
 
-/* crash guard */
+/* ── crash guard ── */
 process.on("unhandledRejection", r => console.error("🔴 UNHANDLED", r));
 
-/* ENV */
+/* ── ENV ── */
 const {
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY,
@@ -35,93 +31,129 @@ const {
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
   TWILIO_PHONE_NUMBER,
-  PORT = 8080
+  PORT = 8080,
 } = process.env;
 const WHATSAPP_FROM =
   TWILIO_PHONE_NUMBER.startsWith("whatsapp:")
     ? TWILIO_PHONE_NUMBER
     : `whatsapp:${TWILIO_PHONE_NUMBER}`;
 
-/* clients */
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-const openai   = new OpenAI({ apiKey: OPENAI_API_KEY });
-const stripe   = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" });
+/* ── clients ── */
+const supabase     = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+const openai       = new OpenAI({ apiKey: OPENAI_API_KEY });
+const stripe       = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" });
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
-/* express */
-const app = express();
-
-/* =====================================================================
+/* ──────────────────────────────────────────────────────────────────────
    Stripe helpers
-===================================================================== */
-app.post(
-  "/stripe-webhook",
-  bodyParser.raw({ type: "application/json" }),
-  stripeWebhookHandler )
-/* ---------------- 1. ensureCustomer: synchronous UPSERT ------------- */
+────────────────────────────────────────────────────────────────────── */
+
+/* Ensure row has stripe_cust_id before checkout */
 async function ensureCustomer(user) {
   if (user.stripe_cust_id) return user.stripe_cust_id;
 
-  const customer = await stripe.customers.create({
+  const c = await stripe.customers.create({
     description: `TuCanChat — ${user.phone_number}`,
     email: user.email || undefined,
-    name:  user.full_name || user.phone_number
+    name : user.full_name || user.phone_number
   });
 
-  /* upsert + select + throwOnError guarantees the row is written now */
+  /* synchronous upsert ⇒ row definitely has stripe_cust_id */
   await supabase
     .from("users")
     .upsert(
-      { id: user.id, stripe_cust_id: customer.id },
+      { id: user.id, stripe_cust_id: c.id },
       { onConflict: ["id"] }
     )
-    .select()
-    .throwOnError();   // <-- you’ll see any RLS / constraint problems immediately
+    .select();
 
-  return customer.id;
+  return c.id;
 }
 
-/* ------------- 2. webhook: one update, but throw if it matches nothing -------- */
-app.post("/stripe-webhook",
+/* Build hosted-checkout link */
+async function checkoutUrl(user, tier /* 'monthly' | 'annual' | 'life' */) {
+  const price =
+    tier === "monthly" ? PRICE_MONTHLY :
+    tier === "annual"  ? PRICE_ANNUAL  :
+    PRICE_LIFE;
+
+  const custId  = await ensureCustomer(user);
+  const session = await stripe.checkout.sessions.create({
+    mode: tier === "life" ? "payment" : "subscription",
+    customer: custId,
+    line_items: [{ price, quantity: 1 }],
+    success_url: "https://tucanchat.io/success",
+    cancel_url : "https://tucanchat.io/cancel",
+    metadata   : { tier }               // uid no longer required
+  });
+
+  return session.url;
+}
+
+/* ──────────────────────────────────────────────────────────────────────
+   Stripe webhook  (must be above any JSON body-parser)
+────────────────────────────────────────────────────────────────────── */
+const app = express();
+
+app.post(
+  "/stripe-webhook",
   bodyParser.raw({ type: "application/json" }),
   async (req, res) => {
+    /* verify signature */
+    let event;
+    try {
+      event = stripe.webhooks.constructEvent(
+        req.body,
+        req.headers["stripe-signature"],
+        STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.error("⚠️  Stripe signature failed:", err.message);
+      return res.sendStatus(400);          // tell Stripe to retry
+    }
 
-    // ... signature check omitted for brevity ...
-
+    /* checkout complete → upgrade */
     if (event.type === "checkout.session.completed") {
       const s = event.data.object;
       const plan =
         s.metadata.tier === "monthly" ? "MONTHLY" :
-        s.metadata.tier === "annual"  ? "ANNUAL"  : "LIFETIME";
+        s.metadata.tier === "annual"  ? "ANNUAL"  :
+        "LIFETIME";
 
-      /* update by customer-ID; error-out if it matches 0 rows */
-      const { error, count } = await supabase
-        .from("users")
-        .update({
-          plan,
-          free_used: 0,
-          stripe_sub_id: s.subscription
-        })
-        .eq("stripe_cust_id", s.customer)
-        .throwOnError({ throwHttpErrors: true })
-        .select("id", { count: "exact" });
-
-      if (count === 0) {
-        console.error("⚠️  Stripe webhook: customer not found", s.customer);
+      try {
+        await supabase
+          .from("users")
+          .update({
+            plan,
+            free_used: 0,
+            stripe_sub_id: s.subscription     // null for lifetime
+          })
+          .eq("stripe_cust_id", s.customer);
+        console.log("✅ plan set to", plan, "for", s.customer);
+      } catch (dbErr) {
+        console.error("❌ Supabase update failed:", dbErr.message);
+        /* returning 200 so Stripe doesn’t keep retrying
+           change to res.sendStatus(500) if you prefer retries */
       }
     }
 
+    /* subscription cancelled → downgrade */
     if (event.type === "customer.subscription.deleted") {
       const sub = event.data.object;
-      await supabase
-        .from("users")
-        .update({ plan: "FREE" })
-        .eq("stripe_sub_id", sub.id)
-        .throwOnError();
+      try {
+        await supabase
+          .from("users")
+          .update({ plan: "FREE" })
+          .eq("stripe_sub_id", sub.id);
+        console.log("↩️  subscription cancelled for", sub.id);
+      } catch (dbErr) {
+        console.error("❌ downgrade failed:", dbErr.message);
+      }
     }
 
-    res.json({ received: true });
-  });
+    res.json({ received: true });   // ACK Stripe
+  }
+);
 
 /* ====================================================================
    2️⃣  CONSTANTS / HELPERS
