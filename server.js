@@ -126,7 +126,6 @@ const pickLang = txt => {
   const lc = m.toLowerCase();
   return Object.values(MENU).find(o=>o.code===lc||o.name.toLowerCase()===lc);
 };
-const paywallMsg =
 const paywallMsg = {
   en: `⚠️ You’ve used your 5 free translations. For unlimited access, please choose
 one of the subscription options below:
