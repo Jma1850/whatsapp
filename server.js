@@ -59,54 +59,74 @@ app.post(
   bodyParser.raw({ type: "application/json" }),
   async (req, res) => {
     let event;
+
+    /* — verify the Stripe signature — */
     try {
       event = stripe.webhooks.constructEvent(
         req.body,
         req.headers["stripe-signature"],
         STRIPE_WEBHOOK_SECRET
       );
-    } catch (e) {
-      console.error("stripe sig err", e.message);
+    } catch (err) {
+      console.error("⚠️  Stripe signature verification failed:", err.message);
       return res.sendStatus(400);
     }
 
+    /* ──────────────────────────────────────────────────────────────
+       A. Checkout completed – upgrade user’s plan
+    ────────────────────────────────────────────────────────────── */
     if (event.type === "checkout.session.completed") {
-      const s    = event.data.object;
-      const plan = s.metadata.tier === "monthly" ? "MONTHLY"
-                 : s.metadata.tier === "annual"  ? "ANNUAL"
-                 : "LIFETIME";
+      const s = event.data.object;
 
-      /* ① by stripe_cust_id */
+      /* 1. figure out which plan they bought */
+      const plan =
+        s.metadata.tier === "monthly"
+          ? "MONTHLY"
+          : s.metadata.tier === "annual"
+          ? "ANNUAL"
+          : "LIFETIME"; // tier === "life"
+
+      /* 2. first try by Stripe customer-ID (most common) */
       const upd1 = await supabase
         .from("users")
-        .update({ plan, free_used: 0, stripe_sub_id: s.subscription })
-        .eq("stripe_cust_id", s.customer);
+        .update({
+          plan,
+          free_used: 0,             // reset free counter
+          stripe_sub_id: s.subscription
+        })
+        .eq("stripe_cust_id", s.customer)
+        .select();                  // ← ensures we get updated rows back
 
-      /* ② fallback by metadata.uid */
-      if (upd1.data?.length === 0) {
+      /* 3. if that matched nothing, fall back to metadata.uid */
+      if (!upd1.data || upd1.data.length === 0) {
         await supabase
           .from("users")
           .update({
             plan,
             free_used: 0,
             stripe_cust_id: s.customer,
-            stripe_sub_id:  s.subscription
+            stripe_sub_id: s.subscription
           })
-          .eq("id", s.metadata.uid);
+          .eq("id", s.metadata.uid);   // uid was added when creating the checkout
       }
     }
 
+    /* ──────────────────────────────────────────────────────────────
+       B. Subscription cancelled – downgrade to FREE
+    ────────────────────────────────────────────────────────────── */
     if (event.type === "customer.subscription.deleted") {
       const sub = event.data.object;
+
       await supabase
         .from("users")
         .update({ plan: "FREE" })
         .eq("stripe_sub_id", sub.id);
     }
+
+    /* — tell Stripe we processed the hook — */
     res.json({ received: true });
   }
 );
-
 /* ====================================================================
    2️⃣  CONSTANTS / HELPERS
 ==================================================================== */
