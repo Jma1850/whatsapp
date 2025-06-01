@@ -127,12 +127,42 @@ const pickLang = txt => {
   return Object.values(MENU).find(o=>o.code===lc||o.name.toLowerCase()===lc);
 };
 const paywallMsg =
-`⚠️ You’ve used your 5 free translations. For unlimited access, please choose 
+const paywallMsg = {
+  en: `⚠️ You’ve used your 5 free translations. For unlimited access, please choose
 one of the subscription options below:
 
 1️⃣ Monthly  $4.99
 2️⃣ Annual   $49.99
-3️⃣ Lifetime $199`;
+3️⃣ Lifetime $199`,
+
+  es: `⚠️ Has usado tus 5 traducciones gratuitas. Para acceso ilimitado, elige
+una de las siguientes opciones de suscripción:
+
+1️⃣ Mensual    $4.99
+2️⃣ Anual     $49.99
+3️⃣ De por vida $199`,
+
+  fr: `⚠️ Vous avez utilisé vos 5 traductions gratuites. Pour un accès illimité, choisissez
+l’une des options d’abonnement ci-dessous :
+
+1️⃣ Mensuel   $4.99
+2️⃣ Annuel    $49.99
+3️⃣ À vie     $199`,
+
+  pt: `⚠️ Você usou suas 5 traduções gratuitas. Para acesso ilimitado, escolha
+uma das opções de assinatura abaixo:
+
+1️⃣ Mensal    US$4.99
+2️⃣ Anual     US$49.99
+3️⃣ Vitalício US$199`,
+
+  de: `⚠️ Du hast deine 5 kostenlosen Übersetzungen aufgebraucht. Für unbegrenzten Zugriff wähle
+eine der folgenden Abo-Optionen:
+
+1️⃣ Monatlich   $4.99
+2️⃣ Jährlich    $49.99
+3️⃣ Lebenslang  $199`
+};
 
 /* ────────── new constants ────────── */
 const WELCOME_MSG =
@@ -372,7 +402,8 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
 
   /* 3. free-tier gate */
   if (isFree && user.free_used >= 5) {
-    await sendMessage(from, paywallMsg);
+    await sendMessage(from, paywallMsg[user.ui_lang || "en"]);
+;
     return;
   }
 
