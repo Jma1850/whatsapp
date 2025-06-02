@@ -490,7 +490,7 @@ if (user.language_step === "target") {
         .eq("phone_number", from);
 
       const gPrompt = await translate(
-        "🔊 Voice gender?\n1️⃣ Male\n2️⃣ Female",
+        "🔊 Choose your voice gender?\n1️⃣ Male\n2️⃣ Female",
         user.target_lang
       );
       await sendMessage(from, gPrompt);
