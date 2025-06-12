@@ -385,7 +385,7 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
       .from("users")
       .upsert(
         { phone_number: from, language_step: "target", plan: "FREE", free_used: 0 },
-        { onConflict: ["phone_number"] }
+        { onConflict: "phone_number" })
       )
       .select("*")
       .single());
