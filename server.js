@@ -15,7 +15,7 @@ import vision           from "@google-cloud/vision";
 
 /* 🆕 PDF libs */
 import pdfParse         from "pdf-parse";
-import * as pdfjs       from "pdfjs-dist/legacy/build/pdf.js";
+import * as pdfjs       from "pdfjs-dist/build/pdf.js";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { createCanvas } from "canvas";
 
