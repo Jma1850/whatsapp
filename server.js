@@ -13,7 +13,7 @@ if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON &&
 
 /* ──────────────────────────────────────────────────────────────────────
    TuCanChat server.js  –  WhatsApp voice ↔ text translator bot
-────────────────────────────────────────────────────────────────────── *
+────────────────────────────────────────────────────────────────────── */
 import express          from "express";
 import bodyParser       from "body-parser";
 import fetch            from "node-fetch";
