@@ -736,29 +736,43 @@ if (user.language_step === "target") {
     console.error("TTS/upload error:",e.message);
   }
 }
-/* ====================================================================
+/* =====================================================================
    4️⃣  Twilio entry  (ACK immediately)
-==================================================================== */
+   =================================================================== */
 app.post(
   "/webhook",
-  bodyParser.urlencoded({ extended:false, limit:"2mb" }),
-  (req,res)=>{
-    if(!req.body||!req.body.From){
-      return res.set("Content-Type","text/xml").send("<Response></Response>");
-    }
-    const { From, Body, NumMedia, MediaUrl0, MediaContentType0, MediaContentSize0 } = req.body;
-    res.set("Content-Type","text/xml").send("<Response></Response>");
-    handleIncoming(
+  bodyParser.urlencoded({ extended: false, limit: "2mb" }),
+  (req, res) => {
+    // Always reply 200 with an empty <Response>
+    res.type("text/xml").send("<Response></Response>");
+
+    const {
       From,
-      (Body||"").trim(),
-      parseInt(NumMedia||"0",10),
+      Body = "",
+      NumMedia = "0",
       MediaUrl0,
       MediaContentType0,
-      parseInt(MediaContentSize0||"0",10)
-    ).catch(e=>console.error("handleIncoming ERR",e));
+      MediaContentSize0 = "0",
+    } = req.body || {};
+
+    // If the payload looks wrong, just ignore it (Twilio already got 200)
+    if (!From) return;
+
+    // Kick off the async work; log any error so container doesn’t crash
+    handleIncoming(
+      From,
+      Body.trim(),
+      parseInt(NumMedia, 10),
+      MediaUrl0,
+      MediaContentType0,
+      parseInt(MediaContentSize0, 10)
+    ).catch((err) => console.error("handleIncoming ERR:", err));
   }
 );
-const PORT = process.env.PORT || 8080;
+
+/* ---------------------------------------------------------------------
+   Server bootstrap  — ONE declaration only
+   ------------------------------------------------------------------ */
+const PORT = process.env.PORT || 8080;   // Railway sets PORT automatically
 app.listen(PORT, () => {
   console.log(`🚀 running on ${PORT}`);
-});
