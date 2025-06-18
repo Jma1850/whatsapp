@@ -1,6 +1,19 @@
+/* ─── GCP cred shim ─────────────────────────────────────────────── */
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON &&
+    !process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+  const credPath = join(tmpdir(), "gcp-key.json");
+  writeFileSync(credPath, process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+  process.env.GOOGLE_APPLICATION_CREDENTIALS = credPath;
+}
+/* ──────────────────────────────────────────────────────────────── */
+
 /* ──────────────────────────────────────────────────────────────────────
    TuCanChat server.js  –  WhatsApp voice ↔ text translator bot
-────────────────────────────────────────────────────────────────────── */
+────────────────────────────────────────────────────────────────────── *
 import express          from "express";
 import bodyParser       from "body-parser";
 import fetch            from "node-fetch";
