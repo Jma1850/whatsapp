@@ -11,7 +11,14 @@ import OpenAI           from "openai";
 import Stripe           from "stripe";
 import twilio           from "twilio";
 import { createClient } from "@supabase/supabase-js";
-import vision from "@google-cloud/vision";
+import vision           from "@google-cloud/vision";
+
+/* 🆕 PDF libs */
+import pdfParse         from "pdf-parse";
+import * as pdfjs       from "pdfjs-dist/legacy/build/pdf.js";
+import { PDFDocument, StandardFonts } from "pdf-lib";
+import { createCanvas } from "canvas";
+
 import * as dotenv      from "dotenv";
 dotenv.config();
 
@@ -32,6 +39,7 @@ const {
   TWILIO_ACCOUNT_SID,
   TWILIO_AUTH_TOKEN,
   TWILIO_PHONE_NUMBER,
+  GOOGLE_APPLICATION_CREDENTIALS_JSON,
   PORT = 8080,
 } = process.env;
 const WHATSAPP_FROM =
@@ -45,7 +53,7 @@ const openai       = new OpenAI({ apiKey: OPENAI_API_KEY });
 const stripe       = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" });
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 const visionClient = new vision.ImageAnnotatorClient({
-  credentials: JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON)
+  credentials: JSON.parse(GOOGLE_APPLICATION_CREDENTIALS_JSON)
 });
 
 /* ──────────────────────────────────────────────────────────────────────
@@ -233,6 +241,80 @@ Recieve a voice note or text you dont 100% understand?
 All without leaving WhatsApp.`;
 /* ─────────────────────────────────── */
 
+/* 🆕  ──────────  PDF HELPERS  ────────── */
+
+/* Split long strings into ~size-char chunks */
+const chunkText = (s, size = 3000) => {
+  const out = [];
+  for (let i = 0; i < s.length; i += size) out.push(s.slice(i, i + size));
+  return out;
+};
+
+/* Extract text → pdf-parse first, Vision OCR fallback */
+async function extractPdfText(buffer) {
+  /* quick parse */
+  const { text } = await pdfParse(buffer);
+  if (text.trim().length >= 200) return text;
+
+  /* fallback OCR (scanned PDF) */
+  const doc = await pdfjs.getDocument({ data: buffer }).promise;
+  let ocr = "";
+  for (let p = 1; p <= doc.numPages; p++) {
+    const page     = await doc.getPage(p);
+    const viewport = page.getViewport({ scale: 2 });
+    const canvas   = createCanvas(viewport.width, viewport.height);
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+
+    const [det] = await visionClient.textDetection(canvas.toBuffer("image/png"));
+    ocr += (det.fullTextAnnotation?.text || "") + "\n\n";
+  }
+  return ocr.trim();
+}
+
+/* Build a simple PDF from translated text */
+async function buildPdf(text) {
+  const doc  = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const { width, height } = doc.addPage().getSize(); // dummy to read size
+  doc.removePage(0);                                 // remove dummy
+
+  const lines = text.split("\n\n");
+  for (const block of lines) {
+    const page = doc.addPage();
+    page.drawText(block, {
+      x: 40,
+      y: height - 60,
+      size: 12,
+      lineHeight: 14,
+      font
+    });
+  }
+  return Buffer.from(await doc.save());
+}
+
+/* Supabase bucket for PDFs (self-healing) */
+async function ensurePdfBucket() {
+  const { error } = await supabase.storage
+    .createBucket("pdf-translations", { public: true });
+  if (error && error.code !== "PGRST116") throw error;
+}
+async function uploadPdf(buffer) {
+  const fn = `pdf_${uuid()}.pdf`;
+  let up = await supabase.storage
+    .from("pdf-translations")
+    .upload(fn, buffer, { contentType: "application/pdf", upsert: true });
+
+  if (up.error && /Bucket not found/i.test(up.error.message)) {
+    await ensurePdfBucket();
+    up = await supabase.storage
+      .from("pdf-translations")
+      .upload(fn, buffer, { contentType: "application/pdf", upsert: true });
+  }
+  if (up.error) throw up.error;
+
+  return `${SUPABASE_URL}/storage/v1/object/public/pdf-translations/${fn}`;
+}
+
 /* audio helpers */
 const toWav = (i,o)=>new Promise((res,rej)=>
   ffmpeg(i).audioCodec("pcm_s16le")
@@ -373,7 +455,14 @@ const logRow=d=>supabase.from("translations").insert({ ...d,id:uuid() });
 /* ====================================================================
    3️⃣  Main handler
 ==================================================================== */
-async function handleIncoming(from, text = "", num, mediaUrl) {
+async function handleIncoming(
+  from,
+  text = "",
+  num = 0,
+  mediaUrl,
+  mediaType = "",
+  mediaSize = 0
+) {
   if (!from) return;
   const lower = text.trim().toLowerCase();
 
@@ -390,9 +479,8 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
       .upsert(
         { phone_number: from, language_step: "target", plan: "FREE", free_used: 0 },
         { onConflict: "phone_number" })
-      )
       .select("*")
-      .single();
+      .single());
 
     await sendMessage(from, WELCOME_MSG);
     return;
@@ -474,8 +562,6 @@ if (user.language_step === "target") {
   return;
 }
 
-
-
   /* 4b. pick SOURCE language (user’s sending language) */
   if (user.language_step === "source") {
     const choice = pickLang(text);
@@ -528,6 +614,73 @@ if (user.language_step === "target") {
     await sendMessage(from,"⚠️ Setup incomplete. Text *reset* to start over.");return;
   }
 
+ 
+  /* ------------------ PDF branch ------------------ */
+  const isPdf = num > 0 && mediaType && mediaType.includes("pdf");
+  if (isPdf) {
+    if (mediaSize > 16000000) {
+      await sendMessage(from, "🙁 PDF too big for WhatsApp (limit 16 MB).");
+      return;
+    }
+    const auth = "Basic " + Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
+    const pdfBuffer = await (await fetch(mediaUrl, { headers: { Authorization: auth } })).buffer();
+
+    let pdfText;
+    try { pdfText = await extractPdfText(pdfBuffer); }
+    catch (err) {
+      console.error("PDF parse/OCR error:", err);
+      await sendMessage(from, "⚠️ Couldn’t read that PDF.");
+      return;
+    }
+    if (pdfText.length < 10) {
+      await sendMessage(from, "🤔 No readable text in that PDF.");
+      return;
+    }
+
+    const pieces = [];
+    for (const c of chunkText(pdfText)) {
+      pieces.push(await translate(c, user.target_lang));
+    }
+    const translated = pieces.join("\n\n");
+
+    let newPdf;
+    try { newPdf = await buildPdf(translated); }
+    catch (err) {
+      console.error("PDF build error:", err);
+      await sendMessage(from, "⚠️ Couldn’t build translated PDF.");
+      return;
+    }
+
+    let url;
+    try { url = await uploadPdf(newPdf); }
+    catch (err) {
+      console.error("PDF upload error:", err);
+      await sendMessage(from, "⚠️ Couldn’t upload translated PDF.");
+      return;
+    }
+
+    await sendMessage(from, "✅ Translation complete – here’s your file:");
+    await sendMessage(from, "", url);
+
+    const add = 3;
+    if (isFree) {
+      await supabase.from("users")
+        .update({ free_used: (user.free_used || 0) + add })
+        .eq("phone_number", from);
+    }
+    await logRow({
+      phone_number: from,
+      original_text:  "[PDF]",
+      translated_text:"[PDF]",
+      language_from:  user.source_lang,
+      language_to:    user.target_lang,
+      credits_used:   add,
+      file_type:      "PDF"
+    });
+    return;          // done with PDF
+  }
+  /* ------------------------------------------------ */
+
   /* transcribe / detect */
   let original="",detected="";
   if(num>0&&mediaUrl){
@@ -554,9 +707,10 @@ if (user.language_step === "target") {
   const translated = await translate(original,dest);
 
   /* usage + log */
+  const add = 1;
   if(isFree){
     await supabase.from("users")
-      .update({free_used:user.free_used+1})
+      .update({ free_used: (user.free_used || 0) + add })
       .eq("phone_number",from);
   }
   await logRow({
@@ -564,23 +718,24 @@ if (user.language_step === "target") {
     original_text:original,
     translated_text:translated,
     language_from:detected,
-    language_to:dest
+    language_to:dest,
+    credits_used:add,
+    file_type:num>0?"AUDIO":"TEXT"
   });
 
   /* reply flow */
   if(num===0){ await sendMessage(from,translated); return; }
 
-  await sendMessage(from,`🗣 ${original}`);     // 1
-  await sendMessage(from,translated);          // 2
+  await sendMessage(from,`🗣 ${original}`);  // 1
+  await sendMessage(from,translated);        // 2
   try{
     const mp3=await tts(translated,dest,user.voice_gender);
     const pub=await uploadAudio(mp3);
-    await sendMessage(from,"",pub);            // 3 (audio only)
+    await sendMessage(from,"",pub);          // 3 (audio only)
   }catch(e){
     console.error("TTS/upload error:",e.message);
   }
 }
-
 /* ====================================================================
    4️⃣  Twilio entry  (ACK immediately)
 ==================================================================== */
@@ -591,17 +746,15 @@ app.post(
     if(!req.body||!req.body.From){
       return res.set("Content-Type","text/xml").send("<Response></Response>");
     }
-    const { From, Body, NumMedia, MediaUrl0 } = req.body;
+    const { From, Body, NumMedia, MediaUrl0, MediaContentType0, MediaContentSize0 } = req.body;
     res.set("Content-Type","text/xml").send("<Response></Response>");
     handleIncoming(
       From,
       (Body||"").trim(),
       parseInt(NumMedia||"0",10),
-      MediaUrl0
+      MediaUrl0,
+      MediaContentType0,
+      parseInt(MediaContentSize0||"0",10)
     ).catch(e=>console.error("handleIncoming ERR",e));
   }
 );
-
-/* health */
-app.get("/healthz",(_,r)=>r.send("OK"));
-app.listen(PORT,()=>console.log("🚀 running on",PORT));
