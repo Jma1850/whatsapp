@@ -18,7 +18,7 @@
     "openai": "^4.33.0",
     "pdf-lib": "^1.17.1",
     "pdf-parse": "^1.0.5",
-    "pdfjs-dist": "^5.3.31",
+    "pdfjs-dist": "3.7.107",
     "stripe": "^14.25.0",
     "twilio": "^4.7.4"
   }
