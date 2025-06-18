@@ -388,7 +388,7 @@ async function handleIncoming(from, text = "", num, mediaUrl) {
         { onConflict: "phone_number" })
       )
       .select("*")
-      .single());
+      .single();
 
     await sendMessage(from, WELCOME_MSG);
     return;
