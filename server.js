@@ -14,8 +14,8 @@ import { createClient } from "@supabase/supabase-js";
 import vision           from "@google-cloud/vision";
 
 /* 🆕 PDF libs */
-import pdfParse from "pdf-parse/lib/pdf-parse.js";
-import * as pdfjs from "pdfjs-dist/legacy/build/pdf.cjs";
+import * as pdfjs from "pdfjs-dist/legacy/build/pdf.cjs";   // ← must be this
+import pdfParse from "pdf-parse/lib/pdf-parse.js";  
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { createCanvas } from "canvas";
 
