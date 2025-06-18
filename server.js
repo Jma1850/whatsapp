@@ -11,6 +11,7 @@ import OpenAI           from "openai";
 import Stripe           from "stripe";
 import twilio           from "twilio";
 import { createClient } from "@supabase/supabase-js";
+import vision from "@google-cloud/vision";
 import * as dotenv      from "dotenv";
 dotenv.config();
 
@@ -43,6 +44,9 @@ const supabase     = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 const openai       = new OpenAI({ apiKey: OPENAI_API_KEY });
 const stripe       = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" });
 const twilioClient = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+const visionClient = new vision.ImageAnnotatorClient({
+  credentials: JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON)
+});
 
 /* ──────────────────────────────────────────────────────────────────────
    Stripe helpers
