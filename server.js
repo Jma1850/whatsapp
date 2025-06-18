@@ -769,10 +769,3 @@ app.post(
     ).catch((err) => console.error("handleIncoming ERR:", err));
   }
 );
-
-/* ---------------------------------------------------------------------
-   Server bootstrap  — ONE declaration only
-   ------------------------------------------------------------------ */
-const PORT = process.env.PORT || 8080;   // Railway sets PORT automatically
-app.listen(PORT, () => {
-  console.log(`🚀 running on ${PORT}`);
