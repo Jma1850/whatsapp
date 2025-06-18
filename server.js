@@ -758,3 +758,7 @@ app.post(
     ).catch(e=>console.error("handleIncoming ERR",e));
   }
 );
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+  console.log(`🚀 running on ${PORT}`);
+});
