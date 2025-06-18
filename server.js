@@ -25,6 +25,7 @@ import Stripe           from "stripe";
 import twilio           from "twilio";
 import { createClient } from "@supabase/supabase-js";
 import vision           from "@google-cloud/vision";
+import { translatePdf } from "./utils/pdftranslate.js";
 
 /* 🆕 PDF libs */
 import * as pdfjs from "pdfjs-dist/legacy/build/pdf.js";   // ← must be this
