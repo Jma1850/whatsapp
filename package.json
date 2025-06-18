@@ -16,5 +16,6 @@
     "openai": "^4.33.0",
     "stripe": "^14.25.0",
     "twilio": "^4.7.4"
+     "@google-cloud/vision": "^5.0.0",
   }
 }
